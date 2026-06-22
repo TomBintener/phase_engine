@@ -132,6 +132,7 @@ serde = ["egraph-serialize/serde"]
 graphviz = ["egraph-serialize/graphviz"]
 
 [dependencies]
+smallvec = "1.11"
 clap = { workspace = true, features = ["derive"], optional = true }
 egraph-serialize = { workspace = true}
 env_logger = { workspace = true, optional = true }

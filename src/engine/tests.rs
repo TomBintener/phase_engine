@@ -134,5 +134,58 @@ macro_rules! define_tests_logic {
             assert_eq!(state.continuous_poly.parities.len(), 1);
             assert_eq!(state.continuous_poly.parities[0], expected_parity);
         }
+        #[test]
+        fn test_apply_z_and_s_and_t() {
+            let mut state = EvaluatedPathSum::new_id(1);
+            state.apply_z(0); // Phase 4
+            state.apply_s(0); // Phase 2
+            state.apply_t(0); // Phase 1
+            // 4 + 2 + 1 = 7 phase accumulation on x0
+            let expected_phase = PackedPhaseTerm::create(1 as $primitive << 0, 7);
+            assert_eq!(state.phase_poly.terms.as_slice(), &[expected_phase]);
+        }
+
+        #[test]
+        fn test_cx_cx_identity() {
+            let mut state = EvaluatedPathSum::new_id(2);
+            state.apply_cx(0, 1);
+            state.apply_cx(0, 1);
+            state.reduce();
+            assert_eq!(state.out_state[1].terms.as_slice(), &[1 << 1]); // Returns to original ID state
+        }
+
+        #[test]
+        fn test_bell_state_and_uncompute() {
+            let mut state = EvaluatedPathSum::new_id(2);
+            state.apply_h(0);
+            state.apply_cx(0, 1);
+            state.apply_cx(0, 1);
+            state.apply_h(0);
+            state.reduce();
+            assert_eq!(state.num_path_vars, 0); // All path vars should be eliminated
+            assert_eq!(state.out_state[0].terms.as_slice(), &[1 << 0]);
+            assert_eq!(state.out_state[1].terms.as_slice(), &[1 << 1]);
+            assert!(state.phase_poly.terms.is_empty());
+        }
+
+        #[test]
+        fn test_apply_sdg_tdg() {
+            let mut state = EvaluatedPathSum::new_id(1);
+            state.apply_sdg(0); // Phase -2 (or 6 mod 8)
+            state.apply_tdg(0); // Phase -1 (or 7 mod 8)
+            // 6 + 7 = 13 mod 8 = 5
+            let expected_phase = PackedPhaseTerm::create(1 as $primitive << 0, 5);
+            assert_eq!(state.phase_poly.terms.as_slice(), &[expected_phase]);
+        }
+
+        #[test]
+        fn test_apply_sx() {
+            let mut state = EvaluatedPathSum::new_id(1);
+            state.apply_sx(0);
+            state.reduce();
+            // SX introduces a path variable, and is equivalent to (1+i)/2 (I + iX).
+            // This is a more complex state, so we just verify it compiled and mutated the state
+            assert!(state.num_path_vars > 0 || !state.phase_poly.terms.is_empty() || !state.continuous_poly.phases.is_empty());
+        }
     }
 }

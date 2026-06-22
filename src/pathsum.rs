@@ -21,7 +21,7 @@
 
 use crate::engine::{engine_64, engine_128};
 use crate::prelude::BaseSort;
-use crate::sort::{BaseValues, Boxed};
+use crate::sort::{BaseValues, Boxed, S};
 use crate::{add_primitive, EGraph, Value};
 use crate::ast::Literal;
 use crate::{TermId, TermDag};
@@ -128,6 +128,7 @@ impl BaseSort for PathSumSort64 {
     fn name(&self) -> &str { "PathSum64" }
 
     fn register_primitives(&self, eg: &mut EGraph) {
+        add_primitive!(eg, "rust_pathsum_debug_64" = |s: PSum64| -> S { S::new(format!("{:#?}", *s)) });
         add_primitive!(eg, "rust_id_pathsum_64" = |q: i64| -> PSum64 { id_pathsum_logic_64(q) });
         add_primitive!(eg, "rust_apply_x_64" = |s: PSum64, q: i64| -> PSum64 { apply_gate_logic_64(s, q, |st, q_| st.apply_x(q_)) });
         add_primitive!(eg, "rust_apply_z_64" = |s: PSum64, q: i64| -> PSum64 { apply_gate_logic_64(s, q, |st, q_| st.apply_z(q_)) });
@@ -153,6 +154,7 @@ impl BaseSort for PathSumSort128 {
     fn name(&self) -> &str { "PathSum128" }
 
     fn register_primitives(&self, eg: &mut EGraph) {
+        add_primitive!(eg, "rust_pathsum_debug_128" = |s: PSum128| -> S { S::new(format!("{:#?}", *s)) });
         add_primitive!(eg, "rust_id_pathsum_128" = |q: i64| -> PSum128 { id_pathsum_logic_128(q) });
         add_primitive!(eg, "rust_apply_x_128" = |s: PSum128, q: i64| -> PSum128 { apply_gate_logic_128(s, q, |st, q_| st.apply_x(q_)) });
         add_primitive!(eg, "rust_apply_z_128" = |s: PSum128, q: i64| -> PSum128 { apply_gate_logic_128(s, q, |st, q_| st.apply_z(q_)) });
