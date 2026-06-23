@@ -10,6 +10,7 @@ use std::cmp::Ordering;
 use std::f64::consts::TAU;
 use std::hash::{Hash, Hasher};
 
+#[allow(dead_code)]
 const EPSILON: f64 = 1e-10;
 
 // Include the files that define the logic-generating macros.

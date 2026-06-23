@@ -1,6 +1,7 @@
 // Note: This file is included at the top level of `engine/mod.rs`
 // and defines a macro that is called by the main engine-generating macro.
 
+#[allow(unused_macros)]
 macro_rules! define_tests_logic {
     (
         $primitive:ty,

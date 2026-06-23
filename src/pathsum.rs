@@ -21,7 +21,7 @@
 
 use crate::engine::{engine_64, engine_128};
 use crate::prelude::BaseSort;
-use crate::sort::{BaseValues, Boxed, S};
+use crate::sort::{BaseValues, Boxed};
 use crate::{add_primitive, EGraph, Value};
 use crate::ast::Literal;
 use crate::{TermId, TermDag};
