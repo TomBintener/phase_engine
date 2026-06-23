@@ -93,6 +93,36 @@ macro_rules! define_continuous_poly_logic {
                     }
                 }
             }
+
+            pub fn extract_cliffords(&mut self) -> Vec<(Vec<$primitive>, u8)> {
+                let mut extracted = Vec::new();
+                let mut write_idx = 0;
+                
+                for read_idx in 0..self.phases.len() {
+                    let phase = self.phases[read_idx];
+                    let units = (phase / std::f64::consts::FRAC_PI_4).round() as i64;
+                    
+                    let mut remainder = phase;
+                    if units != 0 {
+                        remainder = snap_phase(phase - (units as f64 * std::f64::consts::FRAC_PI_4));
+                        extracted.push((self.parities[read_idx].terms.to_vec(), units.rem_euclid(8) as u8));
+                    }
+                    
+                    let norm = snap_phase(remainder.rem_euclid(TAU));
+                    if norm != 0.0 && norm != snap_phase(TAU) {
+                        self.phases[write_idx] = norm;
+                        if read_idx != write_idx {
+                            self.parities[write_idx] = self.parities[read_idx].clone();
+                        }
+                        write_idx += 1;
+                    }
+                }
+                
+                self.phases.truncate(write_idx);
+                self.parities.truncate(write_idx);
+                
+                extracted
+            }
         }
 
         impl PartialEq for ContinuousPhasePoly {

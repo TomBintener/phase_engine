@@ -141,9 +141,24 @@ macro_rules! define_evaluator_logic {
                 self.phase_poly.merge_unsorted_batch(batch);
             }
 
+            pub fn promote_cliffords(&mut self) -> bool {
+                let cliffords = self.continuous_poly.extract_cliffords();
+                if cliffords.is_empty() { return false; }
+                
+                let mut batch = Vec::new();
+                for (monomials, phase_units) in cliffords {
+                    for mono in monomials {
+                        batch.push(PackedPhaseTerm::create(mono, phase_units));
+                    }
+                }
+                self.phase_poly.merge_unsorted_batch(batch);
+                true
+            }
+
             pub fn apply_rz(&mut self, q: usize, theta: f64) {
                 let current_parity = self.out_state[q].clone();
                 self.continuous_poly.apply_phase(current_parity, theta);
+                self.promote_cliffords();
             }
         }
     }
