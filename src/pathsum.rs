@@ -74,6 +74,14 @@ pub fn apply_rz_logic_64(state: PSum64, q: i64, theta_bits: i64) -> PSum64 {
     PSum64::new(new_state)
 }
 
+pub fn rust_add_rz_bits_logic(a: i64, b: i64) -> i64 {
+    let f_a = f64::from_bits(a as u64);
+    let f_b = f64::from_bits(b as u64);
+    let sum = (f_a + f_b) % (2.0 * std::f64::consts::PI);
+    let bounded = if sum < 0.0 { sum + 2.0 * std::f64::consts::PI } else { sum };
+    bounded.to_bits() as i64
+}
+
 // --- Logic for the 128-bit Engine ---
 
 pub fn id_pathsum_logic_128(num_qubits: i64) -> PSum128 {
@@ -140,6 +148,7 @@ impl BaseSort for PathSumSort64 {
         add_primitive!(eg, "rust_apply_h_64" = |s: PSum64, q: i64| -> PSum64 { apply_gate_logic_64(s, q, |st, q_| st.apply_h(q_)) });
         add_primitive!(eg, "rust_apply_cx_64" = |s: PSum64, qc: i64, qt: i64| -> PSum64 { apply_cx_logic_64(s, qc, qt) });
         add_primitive!(eg, "rust_apply_rz_64" = |s: PSum64, q: i64, t: i64| -> PSum64 { apply_rz_logic_64(s, q, t) });
+        add_primitive!(eg, "rust_add_rz_bits" = |a: i64, b: i64| -> i64 { rust_add_rz_bits_logic(a, b) });
     }
     fn reconstruct_termdag(&self, _bv: &BaseValues, _v: Value, td: &mut TermDag) -> TermId {
         let arg = td.lit(Literal::Int(0));
