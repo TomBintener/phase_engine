@@ -6,28 +6,30 @@ macro_rules! define_continuous_poly_logic {
         $primitive:ty,
         $poly_capacity:expr
     ) => {
+        const SNAP_PRECISION: f64 = 100_000_000.0;
+
+        #[inline(always)]
+        fn snap_phase(val: f64) -> f64 {
+            (val * SNAP_PRECISION).round() / SNAP_PRECISION
+        }
+
         #[derive(Debug, Clone, Default)]
         pub struct ContinuousPhasePoly {
             pub parities: Vec<BooleanPoly>,
             pub phases: Vec<f64>,
         }
 
-        fn quantize_phase(phase: f64) -> i64 {
-            let norm_phase = phase.rem_euclid(TAU);
-            if (TAU - norm_phase) <= EPSILON { return 0; }
-            (norm_phase / EPSILON).round() as i64
-        }
-
         impl ContinuousPhasePoly {
             pub fn new() -> Self { Self::default() }
 
             pub fn apply_phase(&mut self, parity: BooleanPoly, theta: f64) {
-                let normalized_theta = theta.rem_euclid(TAU);
-                if normalized_theta <= EPSILON || (TAU - normalized_theta) <= EPSILON { return; }
+                let normalized_theta = snap_phase(theta.rem_euclid(TAU));
+                if normalized_theta == 0.0 || normalized_theta == snap_phase(TAU) { return; }
+                
                 match self.parities.binary_search_by(|p| p.terms.cmp(&parity.terms)) {
                     Ok(idx) => {
-                        let new_phase = (self.phases[idx] + normalized_theta).rem_euclid(TAU);
-                        if new_phase <= EPSILON || (TAU - new_phase) <= EPSILON {
+                        let new_phase = snap_phase((self.phases[idx] + normalized_theta).rem_euclid(TAU));
+                        if new_phase == 0.0 || new_phase == snap_phase(TAU) {
                             self.parities.remove(idx);
                             self.phases.remove(idx);
                         } else {
@@ -45,6 +47,7 @@ macro_rules! define_continuous_poly_logic {
                 if self.parities.is_empty() { return; }
                 let mut combined: Vec<_> = self.parities.drain(..).zip(self.phases.drain(..)).collect();
                 combined.sort_unstable_by(|a, b| a.0.terms.cmp(&b.0.terms));
+                
                 let mut i = 0;
                 while i < combined.len() {
                     let mut j = i + 1;
@@ -53,8 +56,8 @@ macro_rules! define_continuous_poly_logic {
                         accumulated_phase += combined[j].1;
                         j += 1;
                     }
-                    let norm = accumulated_phase.rem_euclid(TAU);
-                    if norm > EPSILON && (TAU - norm) > EPSILON {
+                    let norm = snap_phase(accumulated_phase.rem_euclid(TAU));
+                    if norm != 0.0 && norm != snap_phase(TAU) {
                         self.parities.push(combined[i].0.clone());
                         self.phases.push(norm);
                     }
@@ -95,14 +98,19 @@ macro_rules! define_continuous_poly_logic {
         impl PartialEq for ContinuousPhasePoly {
             fn eq(&self, other: &Self) -> bool {
                 if self.parities != other.parities || self.phases.len() != other.phases.len() { return false; }
-                self.phases.iter().zip(other.phases.iter()).all(|(&a, &b)| quantize_phase(a) == quantize_phase(b))
+                self.phases.iter().zip(other.phases.iter()).all(|(&a, &b)| {
+                    (a * SNAP_PRECISION).round() as i64 == (b * SNAP_PRECISION).round() as i64
+                })
             }
         }
         impl Eq for ContinuousPhasePoly {}
+        
         impl Hash for ContinuousPhasePoly {
             fn hash<H: Hasher>(&self, state: &mut H) {
                 self.parities.hash(state);
-                for &phase in &self.phases { quantize_phase(phase).hash(state); }
+                for &phase in &self.phases { 
+                    ((phase * SNAP_PRECISION).round() as i64).hash(state); 
+                }
             }
         }
     }
