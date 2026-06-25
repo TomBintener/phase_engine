@@ -100,7 +100,8 @@ macro_rules! define_continuous_poly_logic {
                 
                 for read_idx in 0..self.phases.len() {
                     let phase = self.phases[read_idx];
-                    let units = (phase / std::f64::consts::FRAC_PI_4).round() as i64;
+                    let mut units = (phase / std::f64::consts::FRAC_PI_4).round() as i64;
+                    if units == 8 { units = 0; }
                     
                     let mut remainder = phase;
                     if units != 0 {

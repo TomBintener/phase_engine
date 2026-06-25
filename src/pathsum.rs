@@ -53,6 +53,18 @@ where
     PSum64::new(new_state)
 }
 
+pub fn apply_gate_no_reduce_logic_64<F>(state: PSum64, q: i64, op: F) -> PSum64
+where
+    F: Fn(&mut engine_64::EvaluatedPathSum, usize),
+{
+    if q < 0 || q as usize >= state.num_qubits as usize {
+        return state;
+    }
+    let mut new_state = (*state).clone();
+    op(&mut new_state, q as usize);
+    PSum64::new(new_state)
+}
+
 pub fn apply_cx_logic_64(state: PSum64, qc: i64, qt: i64) -> PSum64 {
     if qc == qt || qc < 0 || qt < 0 ||
        qc as usize >= state.num_qubits as usize ||
@@ -61,7 +73,6 @@ pub fn apply_cx_logic_64(state: PSum64, qc: i64, qt: i64) -> PSum64 {
     }
     let mut new_state = (*state).clone();
     new_state.apply_cx(qc as usize, qt as usize);
-    new_state.reduce();
     PSum64::new(new_state)
 }
 
@@ -71,7 +82,14 @@ pub fn apply_rz_logic_64(state: PSum64, q: i64, theta_bits: i64) -> PSum64 {
     }
     let mut new_state = (*state).clone();
     new_state.apply_rz(q as usize, f64::from_bits(theta_bits as u64));
+    new_state.reduce();
     PSum64::new(new_state)
+}
+
+const SNAP_PRECISION: f64 = 100_000_000.0;
+#[inline(always)]
+fn snap_phase(val: f64) -> f64 {
+    (val * SNAP_PRECISION).round() / SNAP_PRECISION
 }
 
 pub fn rust_add_rz_bits_logic(a: i64, b: i64) -> i64 {
@@ -79,7 +97,8 @@ pub fn rust_add_rz_bits_logic(a: i64, b: i64) -> i64 {
     let f_b = f64::from_bits(b as u64);
     let sum = (f_a + f_b) % (2.0 * std::f64::consts::PI);
     let bounded = if sum < 0.0 { sum + 2.0 * std::f64::consts::PI } else { sum };
-    bounded.to_bits() as i64
+    let snapped = snap_phase(bounded);
+    snapped.to_bits() as i64
 }
 
 // --- Logic for the 128-bit Engine ---
@@ -105,6 +124,18 @@ where
     PSum128::new(new_state)
 }
 
+pub fn apply_gate_no_reduce_logic_128<F>(state: PSum128, q: i64, op: F) -> PSum128
+where
+    F: Fn(&mut engine_128::EvaluatedPathSum, usize),
+{
+    if q < 0 || q as usize >= state.num_qubits as usize {
+        return state;
+    }
+    let mut new_state = (*state).clone();
+    op(&mut new_state, q as usize);
+    PSum128::new(new_state)
+}
+
 pub fn apply_cx_logic_128(state: PSum128, qc: i64, qt: i64) -> PSum128 {
     if qc == qt || qc < 0 || qt < 0 ||
        qc as usize >= state.num_qubits as usize ||
@@ -113,7 +144,6 @@ pub fn apply_cx_logic_128(state: PSum128, qc: i64, qt: i64) -> PSum128 {
     }
     let mut new_state = (*state).clone();
     new_state.apply_cx(qc as usize, qt as usize);
-    new_state.reduce();
     PSum128::new(new_state)
 }
 
@@ -123,6 +153,7 @@ pub fn apply_rz_logic_128(state: PSum128, q: i64, theta_bits: i64) -> PSum128 {
     }
     let mut new_state = (*state).clone();
     new_state.apply_rz(q as usize, f64::from_bits(theta_bits as u64));
+    new_state.reduce();
     PSum128::new(new_state)
 }
 
@@ -138,7 +169,7 @@ impl BaseSort for PathSumSort64 {
     fn register_primitives(&self, eg: &mut EGraph) {
         add_primitive!(eg, "rust_pathsum_debug_64" = |s: PSum64| -> S { S::new(format!("{:#?}", *s)) });
         add_primitive!(eg, "rust_id_pathsum_64" = |q: i64| -> PSum64 { id_pathsum_logic_64(q) });
-        add_primitive!(eg, "rust_apply_x_64" = |s: PSum64, q: i64| -> PSum64 { apply_gate_logic_64(s, q, |st, q_| st.apply_x(q_)) });
+        add_primitive!(eg, "rust_apply_x_64" = |s: PSum64, q: i64| -> PSum64 { apply_gate_no_reduce_logic_64(s, q, |st, q_| st.apply_x(q_)) });
         add_primitive!(eg, "rust_apply_z_64" = |s: PSum64, q: i64| -> PSum64 { apply_gate_logic_64(s, q, |st, q_| st.apply_z(q_)) });
         add_primitive!(eg, "rust_apply_s_64" = |s: PSum64, q: i64| -> PSum64 { apply_gate_logic_64(s, q, |st, q_| st.apply_s(q_)) });
         add_primitive!(eg, "rust_apply_sdg_64" = |s: PSum64, q: i64| -> PSum64 { apply_gate_logic_64(s, q, |st, q_| st.apply_sdg(q_)) });
@@ -165,7 +196,7 @@ impl BaseSort for PathSumSort128 {
     fn register_primitives(&self, eg: &mut EGraph) {
         add_primitive!(eg, "rust_pathsum_debug_128" = |s: PSum128| -> S { S::new(format!("{:#?}", *s)) });
         add_primitive!(eg, "rust_id_pathsum_128" = |q: i64| -> PSum128 { id_pathsum_logic_128(q) });
-        add_primitive!(eg, "rust_apply_x_128" = |s: PSum128, q: i64| -> PSum128 { apply_gate_logic_128(s, q, |st, q_| st.apply_x(q_)) });
+        add_primitive!(eg, "rust_apply_x_128" = |s: PSum128, q: i64| -> PSum128 { apply_gate_no_reduce_logic_128(s, q, |st, q_| st.apply_x(q_)) });
         add_primitive!(eg, "rust_apply_z_128" = |s: PSum128, q: i64| -> PSum128 { apply_gate_logic_128(s, q, |st, q_| st.apply_z(q_)) });
         add_primitive!(eg, "rust_apply_s_128" = |s: PSum128, q: i64| -> PSum128 { apply_gate_logic_128(s, q, |st, q_| st.apply_s(q_)) });
         add_primitive!(eg, "rust_apply_sdg_128" = |s: PSum128, q: i64| -> PSum128 { apply_gate_logic_128(s, q, |st, q_| st.apply_sdg(q_)) });

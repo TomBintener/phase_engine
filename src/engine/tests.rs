@@ -188,5 +188,130 @@ macro_rules! define_tests_logic {
             // This is a more complex state, so we just verify it compiled and mutated the state
             assert!(state.num_path_vars > 0 || !state.phase_poly.terms.is_empty() || !state.continuous_poly.phases.is_empty());
         }
+
+        #[test]
+        fn test_rz_promotion_and_reduction() {
+            let mut state = EvaluatedPathSum::new_id(1);
+            state.apply_h(0);
+            state.apply_rz(0, std::f64::consts::PI / 3.0);
+            state.apply_rz(0, 2.0 * std::f64::consts::PI / 3.0);
+            state.apply_h(0);
+            state.reduce();
+            assert_eq!(state.num_path_vars, 0);
+            assert_eq!(state.out_state[0].terms.as_slice(), &[0, 1]);
+        }
+
+        #[test]
+        fn test_rz_anchor_destruction_by_cancellation() {
+            let mut state = EvaluatedPathSum::new_id(1);
+            state.apply_h(0);
+            state.apply_rz(0, std::f64::consts::FRAC_PI_8);
+            state.apply_rz(0, -std::f64::consts::FRAC_PI_8);
+            state.apply_h(0);
+            state.reduce();
+            assert_eq!(state.num_path_vars, 0);
+            assert_eq!(state.out_state[0].terms.as_slice(), &[1 << 0]);
+        }
+
+        #[test]
+        fn test_compact_resolves_accidental_duplicates() {
+            let mut poly = ContinuousPhasePoly::new();
+            let x0 = 1 as $primitive << 0;
+            let x1 = 1 as $primitive << 1;
+            let u = 1 as $primitive << 2;
+            let v = 1 as $primitive << 3;
+
+            poly.apply_phase(BooleanPoly::from_terms(smallvec![u, x1]), std::f64::consts::FRAC_PI_8);
+            poly.apply_phase(BooleanPoly::from_terms(smallvec![v, x0, x1]), std::f64::consts::FRAC_PI_8);
+
+            let e_poly = BooleanPoly::from_terms(smallvec![v, x0]);
+            poly.substitute(u, &e_poly);
+            poly.compact();
+
+            assert_eq!(poly.parities.len(), 1);
+            let mut expected_terms = smallvec![x0, x1, v];
+            expected_terms.sort_unstable();
+            assert_eq!(poly.parities[0], BooleanPoly::from_terms(expected_terms));
+        }
+
+        #[test]
+        fn test_promote_clifford_expansion() {
+            // Apply S directly
+            let mut state_s = EvaluatedPathSum::new_id(2);
+            state_s.apply_cx(0, 1);
+            state_s.apply_s(1);
+            state_s.reduce();
+
+            // Apply Rz(PI/2) which will trigger promote_cliffords
+            let mut state_rz = EvaluatedPathSum::new_id(2);
+            state_rz.apply_cx(0, 1);
+            state_rz.apply_rz(1, std::f64::consts::FRAC_PI_2);
+            state_rz.reduce();
+
+            assert_eq!(state_s.phase_poly.terms, state_rz.phase_poly.terms);
+            assert_eq!(state_s.out_state, state_rz.out_state);
+        }
+
+        #[test]
+        fn test_continuous_accumulation_triggers_promotion() {
+            let mut state = EvaluatedPathSum::new_id(1);
+            // Apply half a T gate (pi/8)
+            state.apply_rz(0, std::f64::consts::FRAC_PI_8);
+            
+            // At this point, the continuous engine holds the phase, discrete is empty
+            assert_eq!(state.phase_poly.terms.len(), 0);
+            assert_eq!(state.continuous_poly.parities.len(), 1);
+
+            // Apply another half a T gate (pi/8)
+            state.apply_rz(0, std::f64::consts::FRAC_PI_8);
+            
+            // They accumulate to pi/4, which triggers promote_cliffords (T gate)
+            // The continuous reservoir should be emptied of this term
+            assert_eq!(state.continuous_poly.extract_cliffords().len(), 0);
+            // Discrete engine now holds the T gate (phase 1)
+            assert_eq!(state.phase_poly.terms.len(), 1);
+            assert_eq!(state.phase_poly.terms[0].phase(), 1);
+        }
+
+        #[test]
+        fn test_negative_rz_matches_sdg() {
+            let mut state_sdg = EvaluatedPathSum::new_id(2);
+            state_sdg.apply_cx(0, 1);
+            state_sdg.apply_sdg(1);
+            
+            let mut state_rz = EvaluatedPathSum::new_id(2);
+            state_rz.apply_cx(0, 1);
+            state_rz.apply_rz(1, -std::f64::consts::FRAC_PI_2); // -pi/2
+            
+            assert_eq!(state_sdg.phase_poly.terms, state_rz.phase_poly.terms);
+        }
+
+        #[test]
+        fn test_rz_t_triplet_expansion() {
+            // Apply T gate on 3 entangled qubits
+            let mut state_t = EvaluatedPathSum::new_id(3);
+            state_t.apply_cx(0, 2);
+            state_t.apply_cx(1, 2);
+            state_t.apply_t(2);
+            
+            // Apply Rz(PI/4) on 3 entangled qubits
+            let mut state_rz = EvaluatedPathSum::new_id(3);
+            state_rz.apply_cx(0, 2);
+            state_rz.apply_cx(1, 2);
+            state_rz.apply_rz(2, std::f64::consts::FRAC_PI_4);
+            
+            // The triplet expansion must mathematically match perfectly
+            assert_eq!(state_t.phase_poly.terms, state_rz.phase_poly.terms);
+        }
+
+        #[test]
+        fn test_large_wrap_around_rz() {
+            let mut state = EvaluatedPathSum::new_id(1);
+            // Apply 3 PI. This should modulo 2PI and become PI (Z gate, phase 4)
+            state.apply_rz(0, 3.0 * std::f64::consts::PI);
+            
+            assert_eq!(state.phase_poly.terms.len(), 1);
+            assert_eq!(state.phase_poly.terms[0].phase(), 4);
+        }
     }
 }

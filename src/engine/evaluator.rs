@@ -46,77 +46,66 @@ macro_rules! define_evaluator_logic {
                 tgt_poly.add_assign(ctrl_poly);
             }
 
+            #[inline(always)]
+            fn push_phase_expansion(&mut self, terms: &[$primitive], phase_units: u8) {
+                let n = terms.len();
+                if phase_units == 4 { // Z
+                    let mut batch = Vec::with_capacity(n);
+                    for i in 0..n { batch.push(PackedPhaseTerm::create(terms[i], 4)); }
+                    self.phase_poly.merge_unsorted_batch(batch);
+                } else if phase_units == 2 || phase_units == 6 { // S, Sdg
+                    let capacity = n + (n * n.saturating_sub(1)) / 2;
+                    let mut batch = Vec::with_capacity(capacity);
+                    for i in 0..n {
+                        batch.push(PackedPhaseTerm::create(terms[i], phase_units));
+                        for j in (i + 1)..n {
+                            batch.push(PackedPhaseTerm::create(terms[i] | terms[j], 4));
+                        }
+                    }
+                    self.phase_poly.merge_unsorted_batch(batch);
+                } else if phase_units % 2 != 0 { // T, Tdg
+                    let pairs = (n * n.saturating_sub(1)) / 2;
+                    let triplets = (n * n.saturating_sub(1) * n.saturating_sub(2)) / 6;
+                    let capacity = n + pairs + triplets;
+                    let mut batch = Vec::with_capacity(capacity);
+                    let pair_phase = (phase_units as i8 * -2).rem_euclid(8) as u8;
+                    
+                    for i in 0..n {
+                        batch.push(PackedPhaseTerm::create(terms[i], phase_units));
+                        for j in (i + 1)..n {
+                            batch.push(PackedPhaseTerm::create(terms[i] | terms[j], pair_phase));
+                            for k in (j + 1)..n {
+                                batch.push(PackedPhaseTerm::create(terms[i] | terms[j] | terms[k], 4));
+                            }
+                        }
+                    }
+                    self.phase_poly.merge_unsorted_batch(batch);
+                }
+            }
+
             pub fn apply_z(&mut self, q: usize) {
-                let terms = &self.out_state[q].terms;
-                let mut batch = Vec::with_capacity(terms.len());
-                for &t in terms { batch.push(PackedPhaseTerm::create(t, 4)); }
-                self.phase_poly.merge_unsorted_batch(batch);
+                let terms = self.out_state[q].terms.clone();
+                self.push_phase_expansion(&terms, 4);
             }
 
             pub fn apply_s(&mut self, q: usize) {
-                let terms = &self.out_state[q].terms;
-                let n = terms.len();
-                let capacity = n + (n * n.saturating_sub(1)) / 2;
-                let mut batch = Vec::with_capacity(capacity);
-                for i in 0..n {
-                    batch.push(PackedPhaseTerm::create(terms[i], 2));
-                    for j in (i + 1)..n {
-                        batch.push(PackedPhaseTerm::create(terms[i] | terms[j], 4));
-                    }
-                }
-                self.phase_poly.merge_unsorted_batch(batch);
+                let terms = self.out_state[q].terms.clone();
+                self.push_phase_expansion(&terms, 2);
             }
 
             pub fn apply_sdg(&mut self, q: usize) {
-                let terms = &self.out_state[q].terms;
-                let n = terms.len();
-                let capacity = n + (n * n.saturating_sub(1)) / 2;
-                let mut batch = Vec::with_capacity(capacity);
-                for i in 0..n {
-                    batch.push(PackedPhaseTerm::create(terms[i], 6));
-                    for j in (i + 1)..n {
-                        batch.push(PackedPhaseTerm::create(terms[i] | terms[j], 4));
-                    }
-                }
-                self.phase_poly.merge_unsorted_batch(batch);
+                let terms = self.out_state[q].terms.clone();
+                self.push_phase_expansion(&terms, 6);
             }
 
             pub fn apply_t(&mut self, q: usize) {
-                let terms = &self.out_state[q].terms;
-                let n = terms.len();
-                let pairs = (n * n.saturating_sub(1)) / 2;
-                let triplets = (n * n.saturating_sub(1) * n.saturating_sub(2)) / 6;
-                let capacity = n + pairs + triplets;
-                let mut batch = Vec::with_capacity(capacity);
-                for i in 0..n {
-                    batch.push(PackedPhaseTerm::create(terms[i], 1));
-                    for j in (i + 1)..n {
-                        batch.push(PackedPhaseTerm::create(terms[i] | terms[j], 6));
-                        for k in (j + 1)..n {
-                            batch.push(PackedPhaseTerm::create(terms[i] | terms[j] | terms[k], 4));
-                        }
-                    }
-                }
-                self.phase_poly.merge_unsorted_batch(batch);
+                let terms = self.out_state[q].terms.clone();
+                self.push_phase_expansion(&terms, 1);
             }
 
             pub fn apply_tdg(&mut self, q: usize) {
-                let terms = &self.out_state[q].terms;
-                let n = terms.len();
-                let pairs = (n * n.saturating_sub(1)) / 2;
-                let triplets = (n * n.saturating_sub(1) * n.saturating_sub(2)) / 6;
-                let capacity = n + pairs + triplets;
-                let mut batch = Vec::with_capacity(capacity);
-                for i in 0..n {
-                    batch.push(PackedPhaseTerm::create(terms[i], 7));
-                    for j in (i + 1)..n {
-                        batch.push(PackedPhaseTerm::create(terms[i] | terms[j], 2));
-                        for k in (j + 1)..n {
-                            batch.push(PackedPhaseTerm::create(terms[i] | terms[j] | terms[k], 4));
-                        }
-                    }
-                }
-                self.phase_poly.merge_unsorted_batch(batch);
+                let terms = self.out_state[q].terms.clone();
+                self.push_phase_expansion(&terms, 7);
             }
 
             pub fn apply_sx(&mut self, q: usize) {
@@ -145,13 +134,9 @@ macro_rules! define_evaluator_logic {
                 let cliffords = self.continuous_poly.extract_cliffords();
                 if cliffords.is_empty() { return false; }
                 
-                let mut batch = Vec::new();
                 for (monomials, phase_units) in cliffords {
-                    for mono in monomials {
-                        batch.push(PackedPhaseTerm::create(mono, phase_units));
-                    }
+                    self.push_phase_expansion(&monomials, phase_units);
                 }
-                self.phase_poly.merge_unsorted_batch(batch);
                 true
             }
 
