@@ -4,8 +4,18 @@ macro_rules! define_pmh_logic {
         /// using Gauss-Jordan Elimination over GF(2).
         /// Returns a list of (control, target) qubit pairs.
         pub fn synthesize_cnot_matrix(mut matrix: Vec<$primitive>, num_qubits: usize) -> Result<Vec<(usize, usize)>, String> {
-            let mut cnots = Vec::new();
+            let mut cnots: Vec<(usize, usize)> = Vec::new();
             let n = num_qubits;
+            
+            let mut push_cnot = |c: usize, r: usize, cnots: &mut Vec<(usize, usize)>| {
+                if let Some(&last) = cnots.last() {
+                    if last == (c, r) {
+                        cnots.pop();
+                        return;
+                    }
+                }
+                cnots.push((c, r));
+            };
 
             for c in 0..n {
                 let mut pivot = c;
@@ -27,9 +37,9 @@ macro_rules! define_pmh_logic {
                 // Swap pivot row if needed
                 if pivot != c {
                     // Swap is 3 CNOTs
-                    cnots.push((pivot, c));
-                    cnots.push((c, pivot));
-                    cnots.push((pivot, c));
+                    push_cnot(pivot, c, &mut cnots);
+                    push_cnot(c, pivot, &mut cnots);
+                    push_cnot(pivot, c, &mut cnots);
                     
                     matrix.swap(pivot, c);
                 }
@@ -38,7 +48,7 @@ macro_rules! define_pmh_logic {
                 for r in 0..n {
                     if r != c && (matrix[r] & ((1 as $primitive) << c)) != 0 {
                         matrix[r] ^= matrix[c];
-                        cnots.push((c, r));
+                        push_cnot(c, r, &mut cnots);
                     }
                 }
             }
