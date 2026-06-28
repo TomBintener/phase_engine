@@ -180,6 +180,14 @@ impl BaseSort for PathSumSort64 {
         add_primitive!(eg, "rust_apply_cx_64" = |s: PSum64, qc: i64, qt: i64| -> PSum64 { apply_cx_logic_64(s, qc, qt) });
         add_primitive!(eg, "rust_apply_rz_64" = |s: PSum64, q: i64, t: i64| -> PSum64 { apply_rz_logic_64(s, q, t) });
         add_primitive!(eg, "rust_add_rz_bits" = |a: i64, b: i64| -> i64 { rust_add_rz_bits_logic(a, b) });
+        add_primitive!(eg, "rust_pathsum_extract_cnot_64" = |s: PSum64| -> S { 
+            if s.phase_poly.terms.is_empty() {
+                let strings: Vec<String> = s.out_state.iter().map(|poly| poly.variable_mask.to_string()).collect();
+                S::new(strings.join(","))
+            } else {
+                S::new("".to_string())
+            }
+        });
     }
     fn reconstruct_termdag(&self, _bv: &BaseValues, _v: Value, td: &mut TermDag) -> TermId {
         let arg = td.lit(Literal::Int(0));
@@ -206,6 +214,14 @@ impl BaseSort for PathSumSort128 {
         add_primitive!(eg, "rust_apply_h_128" = |s: PSum128, q: i64| -> PSum128 { apply_gate_logic_128(s, q, |st, q_| st.apply_h(q_)) });
         add_primitive!(eg, "rust_apply_cx_128" = |s: PSum128, qc: i64, qt: i64| -> PSum128 { apply_cx_logic_128(s, qc, qt) });
         add_primitive!(eg, "rust_apply_rz_128" = |s: PSum128, q: i64, t: i64| -> PSum128 { apply_rz_logic_128(s, q, t) });
+        add_primitive!(eg, "rust_pathsum_extract_cnot_128" = |s: PSum128| -> S { 
+            if s.phase_poly.terms.is_empty() {
+                let strings: Vec<String> = s.out_state.iter().map(|poly| poly.variable_mask.to_string()).collect();
+                S::new(strings.join(","))
+            } else {
+                S::new("".to_string())
+            }
+        });
     }
     fn reconstruct_termdag(&self, _bv: &BaseValues, _v: Value, td: &mut TermDag) -> TermId {
         let arg = td.lit(Literal::Int(0));
