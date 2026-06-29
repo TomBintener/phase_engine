@@ -37,8 +37,13 @@ macro_rules! define_canonical_phase_poly_logic {
         impl Ord for PackedPhaseTerm {
             #[inline(always)]
             fn cmp(&self, other: &Self) -> Ordering {
-                self.monomial().cmp(&other.monomial())
-                    .then_with(|| self.phase().cmp(&other.phase()))
+                // Rotate the phase (top bits) to the bottom.
+                // This shifts the monomial to the top, allowing a
+                // single, branchless primitive integer comparison.
+                let shift = (<$primitive>::BITS - $phase_shift) as u32;
+                let a = self.0.rotate_left(shift);
+                let b = other.0.rotate_left(shift);
+                a.cmp(&b)
             }
         }
 
@@ -49,31 +54,40 @@ macro_rules! define_canonical_phase_poly_logic {
 
         impl CanonicalPhasePoly {
             pub fn add_assign(&mut self, other: &Self) {
-                let mut result = SmallVec::with_capacity(self.terms.len() + other.terms.len());
-                let mut i = 0;
-                let mut j = 0;
+                // 1. Bulk copy directly via slice (guarantees ptr::copy_nonoverlapping)
+                self.terms.extend_from_slice(&other.terms);
 
-                while i < self.terms.len() && j < other.terms.len() {
-                    let a = self.terms[i];
-                    let b = other.terms[j];
+                // 2. Sort (Apply the rotate_left trick to Ord for PackedPhaseTerm for max speed)
+                self.terms.sort_unstable();
 
-                    match a.monomial().cmp(&b.monomial()) {
-                        Ordering::Less => { result.push(a); i += 1; }
-                        Ordering::Greater => { result.push(b); j += 1; }
-                        Ordering::Equal => {
-                            let new_phase = (a.phase() + b.phase()) % 8;
-                            if new_phase != 0 {
-                                result.push(PackedPhaseTerm::create(a.monomial(), new_phase));
-                            }
-                            i += 1;
-                            j += 1;
-                        }
+                // 3. In-place merge and modulo 8 phase cancellation
+                if self.terms.is_empty() { return; }
+
+                let mut write_idx = 0;
+                let mut read_idx = 0;
+                let len = self.terms.len();
+
+                while read_idx < len {
+                    let current_mono = self.terms[read_idx].monomial();
+                    let mut current_phase = self.terms[read_idx].phase();
+                    read_idx += 1;
+
+                    // Consume all identical monomials
+                    while read_idx < len && self.terms[read_idx].monomial() == current_mono {
+                        current_phase = (current_phase + self.terms[read_idx].phase()) % 8;
+                        read_idx += 1;
+                    }
+
+                    // Only keep the term if the phases haven't entirely canceled out
+                    if current_phase != 0 {
+                        self.terms[write_idx] = PackedPhaseTerm::create(current_mono, current_phase);
+                        write_idx += 1;
                     }
                 }
-                result.extend_from_slice(&self.terms[i..]);
-                result.extend_from_slice(&other.terms[j..]);
-                self.terms = result;
-            }
+
+                // 4. Truncate leaves excess heap capacity intact for the next loop iteration
+                self.terms.truncate(write_idx);
+            } // <-- Re-added missing closing brace here
 
             pub fn merge_unsorted_batch(&mut self, mut batch: Vec<PackedPhaseTerm>) {
                 if batch.is_empty() { return; }
@@ -117,19 +131,40 @@ macro_rules! define_canonical_phase_poly_logic {
             }
 
             pub fn add_assign(&mut self, other: &Self) {
-                let mut result = SmallVec::with_capacity(self.terms.len() + other.terms.len());
-                let mut i = 0;
-                let mut j = 0;
-                while i < self.terms.len() && j < other.terms.len() {
-                    match self.terms[i].cmp(&other.terms[j]) {
-                        Ordering::Less => { result.push(self.terms[i]); i += 1; }
-                        Ordering::Greater => { result.push(other.terms[j]); j += 1; }
-                        Ordering::Equal => { i += 1; j += 1; }
+                // 1. Bulk copy
+                self.terms.extend_from_slice(&other.terms);
+
+                // 2. Sort (this will natively use ipnsort since the elements are raw primitives)
+                self.terms.sort_unstable();
+
+                // 3. In-place XOR cancellation
+                if self.terms.is_empty() { return; }
+
+                let mut write_idx = 0;
+                let mut read_idx = 0;
+                let len = self.terms.len();
+
+                while read_idx < len {
+                    let current_mono = self.terms[read_idx];
+                    let mut count = 1;
+                    read_idx += 1;
+
+                    // Consume all identical monomials
+                    while read_idx < len && self.terms[read_idx] == current_mono {
+                        count += 1;
+                        read_idx += 1;
+                    }
+
+                    // Only keep if the count is odd (XOR logic for boolean polynomials)
+                    if count % 2 != 0 {
+                        self.terms[write_idx] = current_mono;
+                        write_idx += 1;
                     }
                 }
-                result.extend_from_slice(&self.terms[i..]);
-                result.extend_from_slice(&other.terms[j..]);
-                self.terms = result;
+
+                self.terms.truncate(write_idx);
+
+                // 4. Update the variable mask in a single pass at the end
                 self.variable_mask = self.terms.iter().fold(0, |acc, &x| acc | x);
             }
 

@@ -7,7 +7,7 @@ macro_rules! define_pmh_logic {
             let mut cnots: Vec<(usize, usize)> = Vec::new();
             let n = num_qubits;
             
-            let mut push_cnot = |c: usize, r: usize, cnots: &mut Vec<(usize, usize)>| {
+            let push_cnot = |c: usize, r: usize, cnots: &mut Vec<(usize, usize)>| {
                 if let Some(&last) = cnots.last() {
                     if last == (c, r) {
                         cnots.pop();
