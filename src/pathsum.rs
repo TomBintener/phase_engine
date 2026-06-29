@@ -25,6 +25,8 @@ use crate::sort::{BaseValues, Boxed};
 use crate::{add_primitive, EGraph, Value};
 use crate::ast::Literal;
 use crate::{TermId, TermDag};
+use crate::engine::engine_64::EvaluatedPathSum as EvaluatedPathSum64;
+use crate::engine::engine_128::EvaluatedPathSum as EvaluatedPathSum128;
 
 // Define type aliases for the 64-bit and 128-bit engines
 pub type PSum64 = Boxed<engine_64::EvaluatedPathSum>;
@@ -157,6 +159,159 @@ pub fn apply_rz_logic_128(state: PSum128, q: i64, theta_bits: i64) -> PSum128 {
     PSum128::new(new_state)
 }
 
+fn rank_m_minus_i_64(state: &EvaluatedPathSum64) -> i64 {
+    let mut m = Vec::with_capacity(state.num_qubits as usize);
+    for i in 0..state.num_qubits as usize {
+        let mut row = state.out_state[i].variable_mask;
+        row ^= 1 << i;
+        m.push(row);
+    }
+    let mut rank = 0;
+    for c in 0..state.num_qubits as usize {
+        let mut pivot = rank;
+        while pivot < state.num_qubits as usize && (m[pivot] & (1 << c)) == 0 {
+            pivot += 1;
+        }
+        if pivot == state.num_qubits as usize {
+            continue;
+        }
+        m.swap(rank, pivot);
+        for r in 0..state.num_qubits as usize {
+            if r != rank && (m[r] & (1 << c)) != 0 {
+                m[r] ^= m[rank];
+            }
+        }
+        rank += 1;
+    }
+    rank as i64
+}
+
+fn rank_m_minus_i_128(state: &EvaluatedPathSum128) -> i64 {
+    let mut m = Vec::with_capacity(state.num_qubits as usize);
+    for i in 0..state.num_qubits as usize {
+        let mut row = state.out_state[i].variable_mask;
+        row ^= 1 << i;
+        m.push(row);
+    }
+    let mut rank = 0;
+    for c in 0..state.num_qubits as usize {
+        let mut pivot = rank;
+        while pivot < state.num_qubits as usize && (m[pivot] & (1 << c)) == 0 {
+            pivot += 1;
+        }
+        if pivot == state.num_qubits as usize {
+            continue;
+        }
+        m.swap(rank, pivot);
+        for r in 0..state.num_qubits as usize {
+            if r != rank && (m[r] & (1 << c)) != 0 {
+                m[r] ^= m[rank];
+            }
+        }
+        rank += 1;
+    }
+    rank as i64
+}
+pub fn synthesize_pmh_logic_64(state: PSum64, gate_count: i64) -> String {
+    println!("[PMH] Checking PathSum with gate_count={}", gate_count);
+    
+    // 1. Purity Check
+    if !state.phase_poly.terms.is_empty() || !state.continuous_poly.parities.is_empty() {
+        println!("  -> Rejected: Has phase/continuous polynomial terms");
+        return "None".to_string();
+    }
+    let valid_mask = (1_u64 << state.num_qubits) - 1;
+    for poly in &state.out_state {
+        if (poly.variable_mask & !valid_mask) != 0 {
+            return "None".to_string();
+        }
+    }
+    
+    // 2. Strict CNOT block boundary
+    let rank = rank_m_minus_i_64(&state);
+    if rank == 0 {
+        return "None".to_string();
+    }
+    
+    // 3. Rank(M - I) lower bound
+    let r = rank;
+    if gate_count <= r {
+        return "None".to_string();
+    }
+    
+    // 4. PMH Synthesis
+    let mut matrix = Vec::with_capacity(state.num_qubits as usize);
+    for i in 0..state.num_qubits as usize {
+        matrix.push(state.out_state[i].variable_mask);
+    }
+    
+    if let Ok(cnots) = crate::engine::engine_64::synthesize_cnot_matrix(matrix, state.num_qubits as usize) {
+        if (cnots.len() as i64) < gate_count {
+            // Build the string representation as simple "c,t;c,t"
+            if cnots.is_empty() {
+                return "empty".to_string();
+            }
+            let str_repr = cnots.iter()
+                .map(|&(c, t)| format!("{},{}", c, t))
+                .collect::<Vec<_>>()
+                .join(";");
+            return str_repr;
+        }
+    }
+    
+    "None".to_string()
+}
+
+pub fn synthesize_pmh_logic_128(state: PSum128, gate_count: i64) -> String {
+    // 1. Purity Check
+    if !state.phase_poly.terms.is_empty() || !state.continuous_poly.parities.is_empty() {
+        return "None".to_string();
+    }
+    let valid_mask = (1_u128 << state.num_qubits) - 1;
+    for poly in &state.out_state {
+        if (poly.variable_mask & !valid_mask) != 0 {
+            return "None".to_string();
+        }
+    }
+    
+    // 2. Strict CNOT block boundary
+    let rank = rank_m_minus_i_128(&state);
+    if rank == 0 {
+        return "None".to_string();
+    }
+    
+    // 3. Rank(M - I) lower bound
+    let r = rank;
+    if gate_count <= r {
+        return "None".to_string();
+    }
+    
+    // 4. PMH Synthesis
+    let mut matrix = Vec::with_capacity(state.num_qubits as usize);
+    for i in 0..state.num_qubits as usize {
+        matrix.push(state.out_state[i].variable_mask as u64); // PMH synthesizer takes u64 since it is capped at 64 anyway!
+    }
+    
+    if let Ok(cnots) = crate::engine::engine_64::synthesize_cnot_matrix(matrix, state.num_qubits as usize) {
+        if (cnots.len() as i64) < gate_count {
+            // Build the string representation as simple "c,t;c,t"
+            if cnots.is_empty() {
+                return "empty".to_string();
+            }
+            let mut parts = Vec::new();
+            for &(c, t) in &cnots {
+                parts.push(format!("{},{}", c, t));
+            }
+            let join_str = parts.join(";");
+            
+            // To pass through E-Graph dynamically we just return the AST string mapping string
+            return join_str;
+        }
+    }
+    
+    return "None".to_string();
+}
+
 
 // --- EGG SORT REGISTRATION ---
 
@@ -179,6 +334,7 @@ impl BaseSort for PathSumSort64 {
         add_primitive!(eg, "rust_apply_h_64" = |s: PSum64, q: i64| -> PSum64 { apply_gate_logic_64(s, q, |st, q_| st.apply_h(q_)) });
         add_primitive!(eg, "rust_apply_cx_64" = |s: PSum64, qc: i64, qt: i64| -> PSum64 { apply_cx_logic_64(s, qc, qt) });
         add_primitive!(eg, "rust_apply_rz_64" = |s: PSum64, q: i64, t: i64| -> PSum64 { apply_rz_logic_64(s, q, t) });
+        add_primitive!(eg, "rust_synthesize_pmh_64" = |s: PSum64, count: i64| -> S { S::new(synthesize_pmh_logic_64(s, count)) });
         add_primitive!(eg, "rust_add_rz_bits" = |a: i64, b: i64| -> i64 { rust_add_rz_bits_logic(a, b) });
         add_primitive!(eg, "rust_pathsum_extract_cnot_64" = |s: PSum64| -> S { 
             if s.phase_poly.terms.is_empty() {
@@ -214,6 +370,7 @@ impl BaseSort for PathSumSort128 {
         add_primitive!(eg, "rust_apply_h_128" = |s: PSum128, q: i64| -> PSum128 { apply_gate_logic_128(s, q, |st, q_| st.apply_h(q_)) });
         add_primitive!(eg, "rust_apply_cx_128" = |s: PSum128, qc: i64, qt: i64| -> PSum128 { apply_cx_logic_128(s, qc, qt) });
         add_primitive!(eg, "rust_apply_rz_128" = |s: PSum128, q: i64, t: i64| -> PSum128 { apply_rz_logic_128(s, q, t) });
+        add_primitive!(eg, "rust_synthesize_pmh_128" = |s: PSum128, count: i64| -> S { S::new(synthesize_pmh_logic_128(s, count)) });
         add_primitive!(eg, "rust_pathsum_extract_cnot_128" = |s: PSum128| -> S { 
             if s.phase_poly.terms.is_empty() {
                 let strings: Vec<String> = s.out_state.iter().map(|poly| poly.variable_mask.to_string()).collect();
