@@ -22,8 +22,6 @@ include!("reduction.rs");
 include!("tests.rs");
 include!("pmh.rs");
 
-pub mod circ_builder;
-
 macro_rules! generate_phase_engine {
     (
         $module_name:ident,

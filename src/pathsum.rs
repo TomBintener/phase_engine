@@ -216,15 +216,26 @@ pub fn synthesize_pmh_logic_64(state: PSum64, gate_count: i64) -> String {
     println!("[PMH] Checking PathSum with gate_count={}", gate_count);
     
     // 1. Purity Check
+    // 1a. No discrete or continuous phase polynomial terms (rules out Z/S/T/H/Rz gates).
     if !state.phase_poly.terms.is_empty() || !state.continuous_poly.parities.is_empty() {
         println!("  -> Rejected: Has phase/continuous polynomial terms");
         return "None".to_string();
     }
+    // 1b. No path variables in out_state (rules out H gates which introduce fresh path vars).
     let valid_mask = (1_u64 << state.num_qubits) - 1;
     for poly in &state.out_state {
         if (poly.variable_mask & !valid_mask) != 0 {
             return "None".to_string();
         }
+    }
+    // 1c. No constant terms (monomial `0`) in out_state.
+    // apply_x XORs in {0}, leaving a net footprint when an odd number of X gates
+    // have been applied to a qubit. variable_mask is blind to this (0 | mask == mask),
+    // so we check the terms SmallVec directly. Even counts of X cancel naturally via
+    // BooleanPoly::add_assign, so this only fires when there is a genuine net X effect.
+    if state.out_state.iter().any(|poly| poly.terms.contains(&0)) {
+        println!("  -> Rejected: Has constant term (net X-gate effect)");
+        return "None".to_string();
     }
     
     // 2. Strict CNOT block boundary
@@ -264,14 +275,24 @@ pub fn synthesize_pmh_logic_64(state: PSum64, gate_count: i64) -> String {
 
 pub fn synthesize_pmh_logic_128(state: PSum128, gate_count: i64) -> String {
     // 1. Purity Check
+    // 1a. No discrete or continuous phase polynomial terms (rules out Z/S/T/H/Rz gates).
     if !state.phase_poly.terms.is_empty() || !state.continuous_poly.parities.is_empty() {
         return "None".to_string();
     }
+    // 1b. No path variables in out_state (rules out H gates which introduce fresh path vars).
     let valid_mask = (1_u128 << state.num_qubits) - 1;
     for poly in &state.out_state {
         if (poly.variable_mask & !valid_mask) != 0 {
             return "None".to_string();
         }
+    }
+    // 1c. No constant terms (monomial `0`) in out_state.
+    // apply_x XORs in {0}, leaving a net footprint when an odd number of X gates
+    // have been applied to a qubit. variable_mask is blind to this (0 | mask == mask),
+    // so we check the terms SmallVec directly. Even counts of X cancel naturally via
+    // BooleanPoly::add_assign, so this only fires when there is a genuine net X effect.
+    if state.out_state.iter().any(|poly| poly.terms.contains(&0)) {
+        return "None".to_string();
     }
     
     // 2. Strict CNOT block boundary
