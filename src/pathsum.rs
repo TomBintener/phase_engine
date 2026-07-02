@@ -213,12 +213,10 @@ fn rank_m_minus_i_128(state: &EvaluatedPathSum128) -> i64 {
     rank as i64
 }
 pub fn synthesize_pmh_logic_64(state: PSum64, gate_count: i64) -> String {
-    println!("[PMH] Checking PathSum with gate_count={}", gate_count);
     
     // 1. Purity Check
     // 1a. No discrete or continuous phase polynomial terms (rules out Z/S/T/H/Rz gates).
     if !state.phase_poly.terms.is_empty() || !state.continuous_poly.parities.is_empty() {
-        println!("  -> Rejected: Has phase/continuous polynomial terms");
         return "None".to_string();
     }
     // 1b. No path variables in out_state (rules out H gates which introduce fresh path vars).
@@ -234,7 +232,6 @@ pub fn synthesize_pmh_logic_64(state: PSum64, gate_count: i64) -> String {
     // so we check the terms SmallVec directly. Even counts of X cancel naturally via
     // BooleanPoly::add_assign, so this only fires when there is a genuine net X effect.
     if state.out_state.iter().any(|poly| poly.terms.contains(&0)) {
-        println!("  -> Rejected: Has constant term (net X-gate effect)");
         return "None".to_string();
     }
     
