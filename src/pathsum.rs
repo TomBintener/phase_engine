@@ -103,6 +103,14 @@ pub fn rust_add_rz_bits_logic(a: i64, b: i64) -> i64 {
     snapped.to_bits() as i64
 }
 
+pub fn rust_negate_rz_bits_logic(a: i64) -> i64 {
+    let f_a = f64::from_bits(a as u64);
+    let neg = -f_a;
+    let bounded = if neg < 0.0 { neg + 2.0 * std::f64::consts::PI } else { neg };
+    let snapped = snap_phase(bounded);
+    snapped.to_bits() as i64
+}
+
 // --- Logic for the 128-bit Engine ---
 
 pub fn id_pathsum_logic_128(num_qubits: i64) -> PSum128 {
@@ -353,7 +361,8 @@ impl BaseSort for PathSumSort64 {
         add_primitive!(eg, "rust_apply_cx_64" = |s: PSum64, qc: i64, qt: i64| -> PSum64 { apply_cx_logic_64(s, qc, qt) });
         add_primitive!(eg, "rust_apply_rz_64" = |s: PSum64, q: i64, t: i64| -> PSum64 { apply_rz_logic_64(s, q, t) });
         add_primitive!(eg, "rust_synthesize_pmh_64" = |s: PSum64, count: i64| -> S { S::new(synthesize_pmh_logic_64(s, count)) });
-        add_primitive!(eg, "rust_add_rz_bits" = |a: i64, b: i64| -> i64 { rust_add_rz_bits_logic(a, b) });
+        add_primitive!(eg, "rust_add_rz_bits_64" = |a: i64, b: i64| -> i64 { rust_add_rz_bits_logic(a, b) });
+        add_primitive!(eg, "rust_negate_rz_bits_64" = |a: i64| -> i64 { rust_negate_rz_bits_logic(a) });
         add_primitive!(eg, "rust_pathsum_extract_cnot_64" = |s: PSum64| -> S { 
             if s.phase_poly.terms.is_empty() {
                 let strings: Vec<String> = s.out_state.iter().map(|poly| poly.variable_mask.to_string()).collect();
@@ -389,6 +398,8 @@ impl BaseSort for PathSumSort128 {
         add_primitive!(eg, "rust_apply_cx_128" = |s: PSum128, qc: i64, qt: i64| -> PSum128 { apply_cx_logic_128(s, qc, qt) });
         add_primitive!(eg, "rust_apply_rz_128" = |s: PSum128, q: i64, t: i64| -> PSum128 { apply_rz_logic_128(s, q, t) });
         add_primitive!(eg, "rust_synthesize_pmh_128" = |s: PSum128, count: i64| -> S { S::new(synthesize_pmh_logic_128(s, count)) });
+        add_primitive!(eg, "rust_add_rz_bits_128" = |a: i64, b: i64| -> i64 { rust_add_rz_bits_logic(a, b) });
+        add_primitive!(eg, "rust_negate_rz_bits_128" = |a: i64| -> i64 { rust_negate_rz_bits_logic(a) });
         add_primitive!(eg, "rust_pathsum_extract_cnot_128" = |s: PSum128| -> S { 
             if s.phase_poly.terms.is_empty() {
                 let strings: Vec<String> = s.out_state.iter().map(|poly| poly.variable_mask.to_string()).collect();

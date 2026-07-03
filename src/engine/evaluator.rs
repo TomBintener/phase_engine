@@ -109,9 +109,19 @@ macro_rules! define_evaluator_logic {
             }
 
             pub fn apply_sx(&mut self, q: usize) {
-                self.apply_h(q);
-                self.apply_s(q);
-                self.apply_h(q);
+                let var_index = self.num_qubits + self.num_path_vars;
+                assert!(var_index < (<$primitive>::BITS - 3), "Exceeded variable limit");
+                let v_mask = 1 as $primitive << var_index;
+                self.num_path_vars += 1;
+                
+                // XOR the path variable into the target qubit
+                let v_poly = BooleanPoly::from_terms(smallvec::smallvec![v_mask]);
+                self.out_state[q].add_assign(&v_poly);
+                
+                // Add S^dag(v) to the phase polynomial (6 units of pi/4)
+                let mut batch = Vec::with_capacity(1);
+                batch.push(PackedPhaseTerm::create(v_mask, 6)); 
+                self.phase_poly.merge_unsorted_batch(batch);
             }
 
             pub fn apply_h(&mut self, q: usize) {
