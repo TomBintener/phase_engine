@@ -26,6 +26,92 @@ macro_rules! define_reduction_logic {
                     }
 
                     let mut continuous_needs_compact = false;
+                    
+                    let mut basis_changed = false;
+                    for v1_idx in self.num_qubits..self.num_qubits + original_num_path_vars {
+                        let v1_mask = 1 as $primitive << v1_idx;
+                        if (dead_vars & v1_mask) != 0 { continue; }
+                        
+                        for v2_idx in v1_idx + 1..self.num_qubits + original_num_path_vars {
+                            let v2_mask = 1 as $primitive << v2_idx;
+                            if (dead_vars & v2_mask) != 0 { continue; }
+                            
+                            let mut identical = true;
+                            let mut appears_anywhere = false;
+                            
+                            for poly in &self.out_state {
+                                let has_v1 = poly.terms.iter().any(|&t| t == v1_mask);
+                                let has_v2 = poly.terms.iter().any(|&t| t == v2_mask);
+                                if has_v1 || has_v2 { appears_anywhere = true; }
+                                if has_v1 != has_v2 { identical = false; break; }
+                                
+                                let has_nonlinear_v1 = poly.terms.iter().any(|&t| t != v1_mask && (t & v1_mask) != 0);
+                                let has_nonlinear_v2 = poly.terms.iter().any(|&t| t != v2_mask && (t & v2_mask) != 0);
+                                if has_nonlinear_v1 || has_nonlinear_v2 { identical = false; break; }
+                            }
+                            
+                            if identical {
+                                for parity in &self.continuous_poly.parities {
+                                    let has_v1 = parity.terms.iter().any(|&t| t == v1_mask);
+                                    let has_v2 = parity.terms.iter().any(|&t| t == v2_mask);
+                                    if has_v1 || has_v2 { appears_anywhere = true; }
+                                    if has_v1 != has_v2 { identical = false; break; }
+                                    
+                                    let has_nonlinear_v1 = parity.terms.iter().any(|&t| t != v1_mask && (t & v1_mask) != 0);
+                                    let has_nonlinear_v2 = parity.terms.iter().any(|&t| t != v2_mask && (t & v2_mask) != 0);
+                                    if has_nonlinear_v1 || has_nonlinear_v2 { identical = false; break; }
+                                }
+                            }
+                            
+                            if identical && appears_anywhere {
+                                basis_changed = true;
+                                
+                                for poly in &mut self.out_state {
+                                    poly.terms.retain(|t| *t != v1_mask);
+                                    poly.variable_mask = poly.terms.iter().fold(0, |acc, &x| acc | x);
+                                }
+                                for parity in &mut self.continuous_poly.parities {
+                                    parity.terms.retain(|t| *t != v1_mask);
+                                    parity.variable_mask = parity.terms.iter().fold(0, |acc, &x| acc | x);
+                                }
+                                
+                                let mut new_phase_terms = Vec::with_capacity(self.phase_poly.terms.len() * 3);
+                                for term in self.phase_poly.terms.iter() {
+                                    let mono = term.monomial();
+                                    let phase = term.phase();
+                                    if (mono & v2_mask) != 0 {
+                                        let base = mono & !v2_mask;
+                                        if (base & v1_mask) != 0 {
+                                            let real_base = base & !v1_mask;
+                                            new_phase_terms.push(PackedPhaseTerm::create(v1_mask | real_base, phase));
+                                            new_phase_terms.push(PackedPhaseTerm::create(mono, (8 - phase) % 8));
+                                        } else {
+                                            new_phase_terms.push(PackedPhaseTerm::create(mono, phase));
+                                            new_phase_terms.push(PackedPhaseTerm::create(v1_mask | base, phase));
+                                            let minus_2c = (8 - (2 * phase) % 8) % 8;
+                                            new_phase_terms.push(PackedPhaseTerm::create(v1_mask | mono, minus_2c));
+                                        }
+                                    } else {
+                                        new_phase_terms.push(*term);
+                                    }
+                                }
+                                self.phase_poly.terms.clear();
+                                self.phase_poly.merge_unsorted_batch(new_phase_terms);
+                                break;
+                            }
+                        }
+                        if basis_changed { break; }
+                    }
+                    
+                    if basis_changed {
+                        global_out_mask = self.out_state.iter().fold(0, |acc, p| acc | p.variable_mask);
+                        for parity in &self.continuous_poly.parities {
+                            global_out_mask |= parity.variable_mask;
+                        }
+                        overall_changed = true;
+                        continue;
+                    }
+
                     let mut changed = true;
                     while changed {
                         changed = false;

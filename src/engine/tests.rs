@@ -68,6 +68,33 @@ macro_rules! define_tests_logic {
         }
 
         #[test]
+        fn test_reduce_hssh_to_x() {
+            let mut state = EvaluatedPathSum::new_id(1);
+            state.apply_h(0);
+            state.apply_s(0);
+            state.apply_s(0);
+            state.apply_h(0);
+            state.reduce();
+            assert_eq!(state.num_path_vars, 0);
+            assert_eq!(state.out_state[0].terms.as_slice(), &[0, 1]);
+            assert!(state.phase_poly.terms.is_empty());
+        }
+
+        #[test]
+        fn test_reduce_tttdg_to_t() {
+            let mut state = EvaluatedPathSum::new_id(1);
+            state.apply_t(0);
+            state.apply_t(0);
+            state.apply_tdg(0);
+            state.reduce();
+            assert_eq!(state.num_path_vars, 0);
+            assert_eq!(state.out_state[0].terms.as_slice(), &[1]);
+            assert_eq!(state.phase_poly.terms.len(), 1);
+            assert_eq!(state.phase_poly.terms[0].monomial(), 1);
+            assert_eq!(state.phase_poly.terms[0].phase(), 1); // T is 1 unit of pi/4
+        }
+
+        #[test]
         fn test_new_id() {
             let state = EvaluatedPathSum::new_id(3);
             assert_eq!(state.num_qubits, 3);
@@ -417,10 +444,8 @@ macro_rules! define_tests_logic {
             s3.apply_sx(0);
             s3.apply_sx(0);
             s3.reduce();
-            // Output state does not reduce fully without path variable reduction
-            // It generates two path variables v_1 and v_2
-            // The terms for the out state are: constant 1, v_1 (mask 2), and v_2 (mask 4)
-            assert_eq!(s3.out_state[0].terms.as_slice(), &[1, 2, 4]);
+            // With the improved reduction logic, SX * SX reduces fully to X!
+            assert_eq!(s3.out_state[0].terms.as_slice(), &[0, 1]);
         }
     }
 }

@@ -79,7 +79,8 @@ macro_rules! define_canonical_phase_poly_logic {
                     }
 
                     // Only keep the term if the phases haven't entirely canceled out
-                    if current_phase != 0 {
+                    // AND drop global phases (current_mono == 0) so the engine natively recognizes quantum equivalences.
+                    if current_phase != 0 && current_mono != 0 {
                         self.terms[write_idx] = PackedPhaseTerm::create(current_mono, current_phase);
                         write_idx += 1;
                     }
@@ -100,14 +101,14 @@ macro_rules! define_canonical_phase_poly_logic {
                         if term.monomial() == current_mono {
                             current_phase = (current_phase + term.phase()) % 8;
                         } else {
-                            if current_phase != 0 {
+                            if current_phase != 0 && current_mono != 0 {
                                 compacted.push(PackedPhaseTerm::create(current_mono, current_phase));
                             }
                             current_mono = term.monomial();
                             current_phase = term.phase();
                         }
                     }
-                    if current_phase != 0 {
+                    if current_phase != 0 && current_mono != 0 {
                         compacted.push(PackedPhaseTerm::create(current_mono, current_phase));
                     }
                 }
