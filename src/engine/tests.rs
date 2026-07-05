@@ -313,5 +313,114 @@ macro_rules! define_tests_logic {
             assert_eq!(state.phase_poly.terms.len(), 1);
             assert_eq!(state.phase_poly.terms[0].phase(), 4);
         }
+        #[test]
+        fn test_ibm_z_slide_control() {
+            let mut s1 = EvaluatedPathSum::new_id(2);
+            s1.apply_cx(0, 1);
+            s1.apply_z(0);
+            s1.reduce();
+
+            let mut s2 = EvaluatedPathSum::new_id(2);
+            s2.apply_z(0);
+            s2.apply_cx(0, 1);
+            s2.reduce();
+
+            assert_eq!(s1.out_state, s2.out_state);
+            assert_eq!(s1.phase_poly.terms, s2.phase_poly.terms);
+        }
+
+        #[test]
+        fn test_ibm_x_slide_target() {
+            let mut s1 = EvaluatedPathSum::new_id(2);
+            s1.apply_cx(0, 1);
+            s1.apply_x(1);
+            s1.reduce();
+
+            let mut s2 = EvaluatedPathSum::new_id(2);
+            s2.apply_x(1);
+            s2.apply_cx(0, 1);
+            s2.reduce();
+
+            assert_eq!(s1.out_state, s2.out_state);
+            assert_eq!(s1.phase_poly.terms, s2.phase_poly.terms);
+        }
+
+        #[test]
+        fn test_ibm_sx_slide_target() {
+            let mut s1 = EvaluatedPathSum::new_id(2);
+            s1.apply_cx(0, 1);
+            s1.apply_sx(1);
+            s1.reduce();
+
+            let mut s2 = EvaluatedPathSum::new_id(2);
+            s2.apply_sx(1);
+            s2.apply_cx(0, 1);
+            s2.reduce();
+
+            assert_eq!(s1.out_state, s2.out_state);
+            assert_eq!(s1.phase_poly.terms, s2.phase_poly.terms);
+        }
+
+        #[test]
+        fn test_ibm_anti_commutation() {
+            let mut s1 = EvaluatedPathSum::new_id(1);
+            s1.apply_x(0);
+            s1.apply_rz(0, 0.1);
+            s1.reduce();
+
+            let mut s2 = EvaluatedPathSum::new_id(1);
+            s2.apply_rz(0, -0.1);
+            s2.apply_x(0);
+            s2.reduce();
+
+            assert_eq!(s1.out_state, s2.out_state);
+            assert_eq!(s1.continuous_poly.parities.len(), 1);
+            assert_eq!(s2.continuous_poly.parities.len(), 1);
+            
+            // X; RZ(0.5) operates on state (1 \oplus x), so it has an extra constant 1 term in parity.
+            let p1 = &s1.continuous_poly.parities[0];
+            let p2 = &s2.continuous_poly.parities[0];
+            assert!(p1.terms.contains(&0)); // Contains the constant term
+            assert!(!p2.terms.contains(&0)); // Does not contain the constant term
+            
+            // Verify phases are correctly stored
+            let expected_phase1 = (0.1_f64).rem_euclid(2.0 * std::f64::consts::PI);
+            let expected_phase2 = (-0.1_f64).rem_euclid(2.0 * std::f64::consts::PI);
+            
+            let phase1 = s1.continuous_poly.phases[0];
+            let phase2 = s2.continuous_poly.phases[0];
+            
+            // We use absolute difference because snap_phase rounds to 8 decimal places internally
+            assert!((phase1 - expected_phase1).abs() < 1e-7);
+            assert!((phase2 - expected_phase2).abs() < 1e-7);
+        }
+
+        #[test]
+        fn test_ibm_trivial_inverses() {
+            // X * X
+            let mut s1 = EvaluatedPathSum::new_id(1);
+            s1.apply_x(0);
+            s1.apply_x(0);
+            s1.reduce();
+            assert_eq!(s1.out_state[0].terms.as_slice(), &[1 << 0]); // x_0
+
+            // Z * Z
+            let mut s2 = EvaluatedPathSum::new_id(1);
+            s2.apply_z(0);
+            s2.apply_z(0);
+            s2.reduce();
+            assert_eq!(s2.out_state[0].terms.as_slice(), &[1 << 0]);
+            assert!(s2.phase_poly.terms.is_empty());
+
+            // SX * SX
+            let mut s3 = EvaluatedPathSum::new_id(1);
+            s3.apply_sx(0);
+            s3.apply_sx(0);
+            s3.reduce();
+            // Output state does not reduce fully without path variable reduction
+            // It generates two path variables v_1 and v_2
+            // The terms for the out state are: constant 1, v_1 (mask 2), and v_2 (mask 4)
+            assert_eq!(s3.out_state[0].terms.as_slice(), &[1, 2, 4]);
+        }
     }
 }
