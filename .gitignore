@@ -24,3 +24,4 @@ scripts/compiled
 tests/*.json
 
 lcov.info
+/profile-viz/profile-viz.iml
