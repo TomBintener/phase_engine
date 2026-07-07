@@ -121,24 +121,63 @@ macro_rules! define_reduction_logic {
                             if (global_out_mask & v_mask) != 0 { continue; }
 
                             let mut p_mask = 0 as $primitive;
-                            let mut is_linear_and_phase_pi = true;
+                            let mut is_valid_pivot = true;
+                            let mut base_phase = 0u8;
                             for term in &self.phase_poly.terms {
                                 let mono = term.monomial();
                                 if (mono & v_mask) != 0 {
-                                    if term.phase() != 4 { is_linear_and_phase_pi = false; break; }
                                     let remaining = mono & !v_mask;
                                     if remaining == 0 {
-                                        p_mask ^= 1 as $primitive << (<$primitive>::BITS - 1);
+                                        let phase = term.phase();
+                                        if phase == 4 {
+                                            p_mask ^= 1 as $primitive << (<$primitive>::BITS - 1);
+                                            base_phase = 4;
+                                        } else if phase == 2 || phase == 6 {
+                                            base_phase = phase;
+                                        } else {
+                                            is_valid_pivot = false;
+                                            break;
+                                        }
                                     } else if remaining.count_ones() == 1 {
+                                        if term.phase() != 4 { is_valid_pivot = false; break; }
                                         p_mask ^= remaining;
                                     } else {
-                                        is_linear_and_phase_pi = false;
+                                        is_valid_pivot = false;
                                         break;
                                     }
                                 }
                             }
 
-                            if !is_linear_and_phase_pi { continue; }
+                            if !is_valid_pivot { continue; }
+
+                            if base_phase == 2 || base_phase == 6 {
+                                let mut in_continuous = false;
+                                for parity in &self.continuous_poly.parities {
+                                    if (parity.variable_mask & v_mask) != 0 {
+                                        in_continuous = true;
+                                        break;
+                                    }
+                                }
+                                if in_continuous { continue; }
+
+                                changed = true;
+                                let e_poly = BooleanPoly::from_mask(p_mask);
+
+                                let mut next_gen_terms = Vec::new();
+                                for term in self.phase_poly.terms.iter() {
+                                    if (term.monomial() & v_mask) == 0 {
+                                        next_gen_terms.push(*term);
+                                    }
+                                }
+                                self.phase_poly.terms.clear();
+                                self.phase_poly.merge_unsorted_batch(next_gen_terms);
+
+                                let phase_to_add = if base_phase == 2 { 6 } else { 2 };
+                                self.push_phase_expansion(&e_poly.terms, phase_to_add);
+                                dead_vars |= v_mask;
+                                continue;
+                            }
+
                             let valid_pivots = p_mask & path_var_mask & !dead_vars;
                             if valid_pivots == 0 { continue; }
 

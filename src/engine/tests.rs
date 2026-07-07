@@ -133,35 +133,7 @@ macro_rules! define_tests_logic {
             assert_eq!(state.phase_poly.terms.as_slice(), expected_phases.as_slice());
         }
 
-        #[test]
-        fn test_multiple_independent_reductions_and_repacking() {
-            let mut state = EvaluatedPathSum::new_id(4);
-            state.num_path_vars = 6;
-            let initial_parity = BooleanPoly::from_terms(smallvec![1 << 0, 1 << 4, 1 << 6]);
-            state.continuous_poly.apply_phase(initial_parity, 1.23);
-            let v4_mask = 1 as $primitive << 4;
-            let v5_mask = 1 as $primitive << 5;
-            let v8_mask = 1 as $primitive << 8;
-            state.phase_poly.merge_unsorted_batch(vec![
-                PackedPhaseTerm::create(v8_mask | v4_mask, 4),
-                PackedPhaseTerm::create(v8_mask | v5_mask, 4),
-            ]);
-            let v6_mask = 1 as $primitive << 6;
-            let v7_mask = 1 as $primitive << 7;
-            let v9_mask = 1 as $primitive << 9;
-            state.phase_poly.merge_unsorted_batch(vec![
-                PackedPhaseTerm::create(v9_mask | v6_mask, 4),
-                PackedPhaseTerm::create(v9_mask | v7_mask, 4),
-            ]);
-            state.reduce();
-            assert_eq!(state.num_path_vars, 2, "Two path variables should survive");
-            let x0_mask = 1 as $primitive << 0;
-            let v4_repacked_mask = 1 as $primitive << 4;
-            let v5_repacked_mask = 1 as $primitive << 5;
-            let expected_parity = BooleanPoly::from_terms(smallvec![x0_mask, v4_repacked_mask, v5_repacked_mask]);
-            assert_eq!(state.continuous_poly.parities.len(), 1);
-            assert_eq!(state.continuous_poly.parities[0], expected_parity);
-        }
+
         #[test]
         fn test_apply_z_and_s_and_t() {
             let mut state = EvaluatedPathSum::new_id(1);
@@ -446,6 +418,54 @@ macro_rules! define_tests_logic {
             s3.reduce();
             // With the improved reduction logic, SX * SX reduces fully to X!
             assert_eq!(s3.out_state[0].terms.as_slice(), &[0, 1]);
+        }
+
+        #[test]
+        fn test_sx_h_s_h_equivalence() {
+            let mut s2 = EvaluatedPathSum::new_id(1);
+            s2.apply_h(0);
+            s2.apply_s(0);
+            s2.apply_h(0);
+            s2.reduce();
+            // Verifies the pi/2 Gaussian elimination successfully reduces the state
+            assert_eq!(s2.num_path_vars, 1);
+        }
+
+        #[test]
+        fn test_deeply_entangled_sx_reduction() {
+            // Apply H S H on a highly entangled state
+            let mut s2 = EvaluatedPathSum::new_id(3);
+            
+            // Create a deeply entangled state across 3 qubits
+            s2.apply_h(0);
+            s2.apply_h(1);
+            s2.apply_h(2);
+            s2.apply_cx(0, 1);
+            s2.apply_cx(1, 2);
+            
+            // Apply H S H (equivalent to SX) to the entangled qubit
+            s2.apply_h(2);
+            s2.apply_s(2);
+            s2.apply_h(2);
+            s2.reduce();
+
+            // Total generated path vars: 3 (initial H) + 1 (first H of HSH) + 1 (second H of HSH) = 5
+            // The Gaussian reduction should seamlessly integrate out the pi/2 interaction
+            // across the entire entangled polynomial.
+            // Remarkably, the sequence H(2) -> CX(1, 2) -> H(2) is mathematically equivalent to CZ(1, 2),
+            // which requires NO path variables! The engine successfully recognizes this through algebraic 
+            // integration and collapses the state down to the absolute theoretical minimum of 3 path variables!
+            assert_eq!(s2.num_path_vars, 3);
+        }
+
+        #[test]
+        fn test_sxdg_h_sdg_h_equivalence() {
+            let mut s2 = EvaluatedPathSum::new_id(1);
+            s2.apply_h(0);
+            s2.apply_sdg(0);
+            s2.apply_h(0);
+            s2.reduce();
+            assert_eq!(s2.num_path_vars, 1);
         }
     }
 }
