@@ -220,6 +220,124 @@ fn rank_m_minus_i_128(state: &EvaluatedPathSum128) -> i64 {
     }
     rank as i64
 }
+pub fn synthesize_steiner_logic_64(state: PSum64, gate_count: i64, topology_str: String) -> String {
+    let valid_mask = (1_u64 << state.num_qubits) - 1;
+    for poly in &state.out_state {
+        if (poly.variable_mask & !valid_mask) != 0 {
+            return "None".to_string(); 
+        }
+    }
+    
+    if state.out_state.iter().any(|poly| poly.terms.contains(&0)) {
+        return "None".to_string();
+    }
+    
+    let topo = crate::engine::engine_64::Topology::new(state.num_qubits as usize, &topology_str);
+    let mut instructions = Vec::new();
+    let mut parities = Vec::new();
+    
+    for term in &state.phase_poly.terms {
+        let phase_unit = term.0 >> 61;
+        let mask = term.0 & 0x1FFFFFFFFFFFFFFF;
+        let angle = (phase_unit as f64) * std::f64::consts::PI / 4.0;
+        parities.push((mask, angle));
+    }
+    for (i, p) in state.continuous_poly.parities.iter().enumerate() {
+        let mask = p.variable_mask;
+        let angle = state.continuous_poly.phases[i];
+        parities.push((mask, angle));
+    }
+    
+    let mut total_cnots = 0;
+    for (mask, angle) in parities {
+        let mut terminals = Vec::new();
+        for i in 0..state.num_qubits {
+            if (mask & (1 << i)) != 0 {
+                terminals.push(i as usize);
+            }
+        }
+        
+        if terminals.is_empty() {
+            continue;
+        } else if terminals.len() == 1 {
+            instructions.push(format!("rz {},{}", terminals[0], angle.to_bits()));
+        } else {
+            let edges = topo.steiner_tree_edges(&terminals);
+            let root = terminals[0];
+            let mut tree_adj = vec![vec![]; state.num_qubits as usize];
+            for &(u, v) in &edges {
+                tree_adj[u].push(v);
+                tree_adj[v].push(u);
+            }
+            
+            let mut visited = vec![false; state.num_qubits as usize];
+            let mut post_order = Vec::new();
+            let mut parent = vec![usize::MAX; state.num_qubits as usize];
+            
+            fn dfs(u: usize, p: usize, adj: &Vec<Vec<usize>>, vis: &mut Vec<bool>, po: &mut Vec<usize>, par: &mut Vec<usize>) {
+                vis[u] = true;
+                par[u] = p;
+                for &v in &adj[u] {
+                    if v != p && !vis[v] {
+                        dfs(v, u, adj, vis, po, par);
+                    }
+                }
+                po.push(u);
+            }
+            
+            dfs(root, usize::MAX, &tree_adj, &mut visited, &mut post_order, &mut parent);
+            
+            for &u in &post_order {
+                if u != root {
+                    let p = parent[u];
+                    instructions.push(format!("cx {},{}", u, p));
+                    total_cnots += 1;
+                }
+            }
+            
+            instructions.push(format!("rz {},{}", root, angle.to_bits()));
+            
+            for &u in post_order.iter().rev() {
+                if u != root {
+                    let p = parent[u];
+                    instructions.push(format!("cx {},{}", u, p));
+                    total_cnots += 1;
+                }
+            }
+        }
+    }
+    
+    let mut matrix = Vec::with_capacity(state.num_qubits as usize);
+    for i in 0..state.num_qubits as usize {
+        matrix.push(state.out_state[i].variable_mask);
+    }
+    
+    if let Ok(cnots) = crate::engine::engine_64::synthesize_cnot_matrix(matrix, state.num_qubits as usize) {
+        let mut final_cnots = Vec::new();
+        for (c, t) in cnots {
+            crate::engine::engine_64::apply_remote_cnot(c, t, &topo, &mut final_cnots);
+        }
+        for (c, t) in &final_cnots {
+            instructions.push(format!("cx {},{}", c, t));
+        }
+        total_cnots += final_cnots.len() as i64;
+    } else {
+        return "None".to_string();
+    }
+    
+    let synth_count = (instructions.len() as i64) + total_cnots;
+    if synth_count >= gate_count {
+        return "None".to_string();
+    }
+    
+    if instructions.is_empty() {
+        return "empty".to_string();
+    }
+    
+    instructions.join(";")
+}
+
+
 pub fn synthesize_pmh_logic_64(state: PSum64, gate_count: i64) -> String {
     
     // 1. Purity Check
@@ -277,6 +395,124 @@ pub fn synthesize_pmh_logic_64(state: PSum64, gate_count: i64) -> String {
     
     "None".to_string()
 }
+
+pub fn synthesize_steiner_logic_128(state: PSum128, gate_count: i64, topology_str: String) -> String {
+    let valid_mask = (1_u128 << state.num_qubits) - 1;
+    for poly in &state.out_state {
+        if (poly.variable_mask & !valid_mask) != 0 {
+            return "None".to_string(); 
+        }
+    }
+    
+    if state.out_state.iter().any(|poly| poly.terms.contains(&0)) {
+        return "None".to_string();
+    }
+    
+    let topo = crate::engine::engine_128::Topology::new(state.num_qubits as usize, &topology_str);
+    let mut instructions = Vec::new();
+    let mut parities = Vec::new();
+    
+    for term in &state.phase_poly.terms {
+        let phase_unit = term.0 >> 125;
+        let mask = term.0 & 0x1FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF;
+        let angle = (phase_unit as f64) * std::f64::consts::PI / 4.0;
+        parities.push((mask, angle));
+    }
+    for (i, p) in state.continuous_poly.parities.iter().enumerate() {
+        let mask = p.variable_mask;
+        let angle = state.continuous_poly.phases[i];
+        parities.push((mask, angle));
+    }
+    
+    let mut total_cnots = 0;
+    for (mask, angle) in parities {
+        let mut terminals = Vec::new();
+        for i in 0..state.num_qubits {
+            if (mask & (1 << i)) != 0 {
+                terminals.push(i as usize);
+            }
+        }
+        
+        if terminals.is_empty() {
+            continue;
+        } else if terminals.len() == 1 {
+            instructions.push(format!("rz {},{}", terminals[0], angle.to_bits()));
+        } else {
+            let edges = topo.steiner_tree_edges(&terminals);
+            let root = terminals[0];
+            let mut tree_adj = vec![vec![]; state.num_qubits as usize];
+            for &(u, v) in &edges {
+                tree_adj[u].push(v);
+                tree_adj[v].push(u);
+            }
+            
+            let mut visited = vec![false; state.num_qubits as usize];
+            let mut post_order = Vec::new();
+            let mut parent = vec![usize::MAX; state.num_qubits as usize];
+            
+            fn dfs(u: usize, p: usize, adj: &Vec<Vec<usize>>, vis: &mut Vec<bool>, po: &mut Vec<usize>, par: &mut Vec<usize>) {
+                vis[u] = true;
+                par[u] = p;
+                for &v in &adj[u] {
+                    if v != p && !vis[v] {
+                        dfs(v, u, adj, vis, po, par);
+                    }
+                }
+                po.push(u);
+            }
+            
+            dfs(root, usize::MAX, &tree_adj, &mut visited, &mut post_order, &mut parent);
+            
+            for &u in &post_order {
+                if u != root {
+                    let p = parent[u];
+                    instructions.push(format!("cx {},{}", u, p));
+                    total_cnots += 1;
+                }
+            }
+            
+            instructions.push(format!("rz {},{}", root, angle.to_bits()));
+            
+            for &u in post_order.iter().rev() {
+                if u != root {
+                    let p = parent[u];
+                    instructions.push(format!("cx {},{}", u, p));
+                    total_cnots += 1;
+                }
+            }
+        }
+    }
+    
+    let mut matrix = Vec::with_capacity(state.num_qubits as usize);
+    for i in 0..state.num_qubits as usize {
+        matrix.push(state.out_state[i].variable_mask as u64);
+    }
+    
+    if let Ok(cnots) = crate::engine::engine_64::synthesize_cnot_matrix(matrix, state.num_qubits as usize) {
+        let mut final_cnots = Vec::new();
+        for (c, t) in cnots {
+            crate::engine::engine_128::apply_remote_cnot(c, t, &topo, &mut final_cnots);
+        }
+        for (c, t) in &final_cnots {
+            instructions.push(format!("cx {},{}", c, t));
+        }
+        total_cnots += final_cnots.len() as i64;
+    } else {
+        return "None".to_string();
+    }
+    
+    let synth_count = (instructions.len() as i64) + total_cnots;
+    if synth_count >= gate_count {
+        return "None".to_string();
+    }
+    
+    if instructions.is_empty() {
+        return "empty".to_string();
+    }
+    
+    instructions.join(";")
+}
+
 
 pub fn synthesize_pmh_logic_128(state: PSum128, gate_count: i64) -> String {
     // 1. Purity Check
@@ -360,6 +596,8 @@ impl BaseSort for PathSumSort64 {
         add_primitive!(eg, "rust_apply_cx_64" = |s: PSum64, qc: i64, qt: i64| -> PSum64 { apply_cx_logic_64(s, qc, qt) });
         add_primitive!(eg, "rust_apply_rz_64" = |s: PSum64, q: i64, t: i64| -> PSum64 { apply_rz_logic_64(s, q, t) });
         add_primitive!(eg, "rust_synthesize_pmh_64" = |s: PSum64, count: i64| -> S { S::new(synthesize_pmh_logic_64(s, count)) });
+        add_primitive!(eg, "rust_synthesize_steiner_64" = |s: PSum64, count: i64, top: S| -> S { S::new(synthesize_steiner_logic_64(s, count, top.to_string())) });
+        add_primitive!(eg, "rust_debug_pathsum_64" = |s: PSum64| -> S { S::new(debug_pathsum_logic_64(s)) });
         add_primitive!(eg, "rust_add_rz_bits_64" = |a: i64, b: i64| -> i64 { rust_add_rz_bits_logic(a, b) });
         add_primitive!(eg, "rust_negate_rz_bits_64" = |a: i64| -> i64 { rust_negate_rz_bits_logic(a) });
     }
@@ -388,6 +626,8 @@ impl BaseSort for PathSumSort128 {
         add_primitive!(eg, "rust_apply_cx_128" = |s: PSum128, qc: i64, qt: i64| -> PSum128 { apply_cx_logic_128(s, qc, qt) });
         add_primitive!(eg, "rust_apply_rz_128" = |s: PSum128, q: i64, t: i64| -> PSum128 { apply_rz_logic_128(s, q, t) });
         add_primitive!(eg, "rust_synthesize_pmh_128" = |s: PSum128, count: i64| -> S { S::new(synthesize_pmh_logic_128(s, count)) });
+        add_primitive!(eg, "rust_synthesize_steiner_128" = |s: PSum128, count: i64, top: S| -> S { S::new(synthesize_steiner_logic_128(s, count, top.to_string())) });
+        add_primitive!(eg, "rust_debug_pathsum_128" = |s: PSum128| -> S { S::new(debug_pathsum_logic_128(s)) });
         add_primitive!(eg, "rust_add_rz_bits_128" = |a: i64, b: i64| -> i64 { rust_add_rz_bits_logic(a, b) });
         add_primitive!(eg, "rust_negate_rz_bits_128" = |a: i64| -> i64 { rust_negate_rz_bits_logic(a) });
     }
@@ -395,4 +635,30 @@ impl BaseSort for PathSumSort128 {
         let arg = td.lit(Literal::Int(0));
         td.app("rust_id_pathsum_128".to_string(), vec![arg])
     }
+}
+
+pub fn debug_pathsum_logic_64(state: PSum64) -> String {
+    let mut out = String::new();
+    out.push_str(&format!("Continuous Parities: {:?}\n", state.continuous_poly.parities));
+    out.push_str(&format!("Continuous Phases: {:?}\n", state.continuous_poly.phases));
+    out.push_str("Phase Poly Terms: ");
+    for term in &state.phase_poly.terms {
+        let phase_unit = term.0 >> 61;
+        let mask = term.0 & 0x1FFFFFFFFFFFFFFF;
+        out.push_str(&format!("(mask={}, phase_unit={}) ", mask, phase_unit));
+    }
+    out
+}
+
+pub fn debug_pathsum_logic_128(state: PSum128) -> String {
+    let mut out = String::new();
+    out.push_str(&format!("Continuous Parities: {:?}\n", state.continuous_poly.parities));
+    out.push_str(&format!("Continuous Phases: {:?}\n", state.continuous_poly.phases));
+    out.push_str("Phase Poly Terms: ");
+    for term in &state.phase_poly.terms {
+        let phase_unit = term.0 >> 125;
+        let mask = term.0 & 0x1FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF;
+        out.push_str(&format!("(mask={}, phase_unit={}) ", mask, phase_unit));
+    }
+    out
 }

@@ -21,6 +21,7 @@ include!("evaluator.rs");
 include!("reduction.rs");
 include!("tests.rs");
 include!("pmh.rs");
+include!("steiner.rs");
 
 macro_rules! generate_phase_engine {
     (
@@ -40,6 +41,7 @@ macro_rules! generate_phase_engine {
             define_evaluator_logic!($primitive);
             define_reduction_logic!($primitive, $poly_capacity);
             define_pmh_logic!($primitive);
+            define_steiner_logic!($primitive);
 
             #[cfg(test)]
             pub mod tests {
@@ -69,3 +71,4 @@ generate_phase_engine!(
     4,
     8
 );
+mod debug_test;
