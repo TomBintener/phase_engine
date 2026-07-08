@@ -220,7 +220,7 @@ fn rank_m_minus_i_128(state: &EvaluatedPathSum128) -> i64 {
     }
     rank as i64
 }
-pub fn synthesize_steiner_logic_64(state: PSum64, gate_count: i64, topology_str: String) -> String {
+pub fn synthesize_steiner_logic_64(state: PSum64, gate_count: i64, topology_str: String, cnot_weight: i64, rz_weight: i64) -> String {
     let valid_mask = (1_u64 << state.num_qubits) - 1;
     for poly in &state.out_state {
         if (poly.variable_mask & !valid_mask) != 0 {
@@ -325,8 +325,8 @@ pub fn synthesize_steiner_logic_64(state: PSum64, gate_count: i64, topology_str:
         return "None".to_string();
     }
     
-    let synth_count = (instructions.len() as i64) + total_cnots;
-    if synth_count >= gate_count {
+    let synth_cost = ((instructions.len() as i64) - total_cnots) * rz_weight + total_cnots * cnot_weight;
+    if synth_cost >= gate_count {
         return "None".to_string();
     }
     
@@ -396,7 +396,7 @@ pub fn synthesize_pmh_logic_64(state: PSum64, gate_count: i64) -> String {
     "None".to_string()
 }
 
-pub fn synthesize_steiner_logic_128(state: PSum128, gate_count: i64, topology_str: String) -> String {
+pub fn synthesize_steiner_logic_128(state: PSum128, gate_count: i64, topology_str: String, cnot_weight: i64, rz_weight: i64) -> String {
     let valid_mask = (1_u128 << state.num_qubits) - 1;
     for poly in &state.out_state {
         if (poly.variable_mask & !valid_mask) != 0 {
@@ -501,8 +501,8 @@ pub fn synthesize_steiner_logic_128(state: PSum128, gate_count: i64, topology_st
         return "None".to_string();
     }
     
-    let synth_count = (instructions.len() as i64) + total_cnots;
-    if synth_count >= gate_count {
+    let synth_cost = ((instructions.len() as i64) - total_cnots) * rz_weight + total_cnots * cnot_weight;
+    if synth_cost >= gate_count {
         return "None".to_string();
     }
     
@@ -596,7 +596,7 @@ impl BaseSort for PathSumSort64 {
         add_primitive!(eg, "rust_apply_cx_64" = |s: PSum64, qc: i64, qt: i64| -> PSum64 { apply_cx_logic_64(s, qc, qt) });
         add_primitive!(eg, "rust_apply_rz_64" = |s: PSum64, q: i64, t: i64| -> PSum64 { apply_rz_logic_64(s, q, t) });
         add_primitive!(eg, "rust_synthesize_pmh_64" = |s: PSum64, count: i64| -> S { S::new(synthesize_pmh_logic_64(s, count)) });
-        add_primitive!(eg, "rust_synthesize_steiner_64" = |s: PSum64, count: i64, top: S| -> S { S::new(synthesize_steiner_logic_64(s, count, top.to_string())) });
+        add_primitive!(eg, "rust_synthesize_steiner_64" = |s: PSum64, count: i64, top: S, cnot_wt: i64, rz_wt: i64| -> S { S::new(synthesize_steiner_logic_64(s, count, top.to_string(), cnot_wt, rz_wt)) });
         add_primitive!(eg, "rust_debug_pathsum_64" = |s: PSum64| -> S { S::new(debug_pathsum_logic_64(s)) });
         add_primitive!(eg, "rust_add_rz_bits_64" = |a: i64, b: i64| -> i64 { rust_add_rz_bits_logic(a, b) });
         add_primitive!(eg, "rust_negate_rz_bits_64" = |a: i64| -> i64 { rust_negate_rz_bits_logic(a) });
@@ -626,7 +626,7 @@ impl BaseSort for PathSumSort128 {
         add_primitive!(eg, "rust_apply_cx_128" = |s: PSum128, qc: i64, qt: i64| -> PSum128 { apply_cx_logic_128(s, qc, qt) });
         add_primitive!(eg, "rust_apply_rz_128" = |s: PSum128, q: i64, t: i64| -> PSum128 { apply_rz_logic_128(s, q, t) });
         add_primitive!(eg, "rust_synthesize_pmh_128" = |s: PSum128, count: i64| -> S { S::new(synthesize_pmh_logic_128(s, count)) });
-        add_primitive!(eg, "rust_synthesize_steiner_128" = |s: PSum128, count: i64, top: S| -> S { S::new(synthesize_steiner_logic_128(s, count, top.to_string())) });
+        add_primitive!(eg, "rust_synthesize_steiner_128" = |s: PSum128, count: i64, top: S, cnot_wt: i64, rz_wt: i64| -> S { S::new(synthesize_steiner_logic_128(s, count, top.to_string(), cnot_wt, rz_wt)) });
         add_primitive!(eg, "rust_debug_pathsum_128" = |s: PSum128| -> S { S::new(debug_pathsum_logic_128(s)) });
         add_primitive!(eg, "rust_add_rz_bits_128" = |a: i64, b: i64| -> i64 { rust_add_rz_bits_logic(a, b) });
         add_primitive!(eg, "rust_negate_rz_bits_128" = |a: i64| -> i64 { rust_negate_rz_bits_logic(a) });
