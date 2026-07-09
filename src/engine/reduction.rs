@@ -108,6 +108,7 @@ macro_rules! define_reduction_logic {
                         for parity in &self.continuous_poly.parities {
                             global_out_mask |= parity.variable_mask;
                         }
+                        self.continuous_poly.compact();
                         overall_changed = true;
                         continue;
                     }

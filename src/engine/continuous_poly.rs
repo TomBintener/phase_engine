@@ -105,8 +105,13 @@ macro_rules! define_continuous_poly_logic {
                     
                     let mut remainder = phase;
                     if units != 0 {
-                        remainder = snap_phase(phase - (units as f64 * std::f64::consts::FRAC_PI_4));
-                        extracted.push((self.parities[read_idx].terms.to_vec(), units.rem_euclid(8) as u8));
+                        let potential_remainder = snap_phase(phase - (units as f64 * std::f64::consts::FRAC_PI_4));
+                        if potential_remainder.rem_euclid(TAU) == 0.0 || potential_remainder.rem_euclid(TAU) == snap_phase(TAU) {
+                            remainder = 0.0;
+                            extracted.push((self.parities[read_idx].terms.to_vec(), units.rem_euclid(8) as u8));
+                        } else {
+                            units = 0;
+                        }
                     }
                     
                     let norm = snap_phase(remainder.rem_euclid(TAU));
