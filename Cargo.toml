@@ -117,6 +117,11 @@ name = "egglog"
 path = "src/main.rs"
 required-features = ["bin"]
 
+[[bin]]
+name = "temp"
+path = "src/temp.rs"
+required-features = ["bin"]
+
 [features]
 default = ["bin"]
 
