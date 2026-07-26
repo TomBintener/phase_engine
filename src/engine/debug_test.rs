@@ -25,7 +25,7 @@ mod debug_tests {
         }
         println!();
         let p_box1 = egglog_core_relations::Boxed(state1.clone());
-        println!("  Synthesized Steiner: {}", synthesize_steiner_logic_64(p_box1.clone(), 10, "".to_string()));
+        println!("  Synthesized Steiner: {}", synthesize_steiner_logic_64(p_box1.clone(), 10, 0, "".to_string(), 1, 1));
         println!("  Synthesized PMH: {}", crate::pathsum::synthesize_pmh_logic_64(p_box1, 10));
 
         let mut state2 = engine_64::EvaluatedPathSum::new_id(2);
@@ -43,7 +43,7 @@ mod debug_tests {
         }
         println!();
         let p_box2 = egglog_core_relations::Boxed(state2.clone());
-        println!("  Synthesized Steiner: {}", synthesize_steiner_logic_64(p_box2.clone(), 10, "".to_string()));
+        println!("  Synthesized Steiner: {}", synthesize_steiner_logic_64(p_box2.clone(), 10, 0, "".to_string(), 1, 1));
         println!("  Synthesized PMH: {}", crate::pathsum::synthesize_pmh_logic_64(p_box2, 10));
         
         println!("Are they equal? {}", state1 == state2);
