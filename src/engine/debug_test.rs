@@ -10,6 +10,7 @@ mod debug_tests {
         println!("DEBUGGING PATHSUM EVALUATION...");
         
         let mut state1 = engine_64::EvaluatedPathSum::new_id(2);
+        state1.comp_mask = 0;
         state1.apply_cx(0, 1);
         state1.apply_rz(1, PI / 4.0);
         state1.apply_cx(0, 1);
@@ -29,6 +30,7 @@ mod debug_tests {
         println!("  Synthesized PMH: {}", crate::pathsum::synthesize_pmh_logic_64(p_box1, 10));
 
         let mut state2 = engine_64::EvaluatedPathSum::new_id(2);
+        state2.comp_mask = 0;
         state2.apply_rz(0, 3.0 * PI / 4.0);
         state2.apply_rz(1, 3.0 * PI / 4.0);
         
@@ -47,6 +49,6 @@ mod debug_tests {
         println!("  Synthesized PMH: {}", crate::pathsum::synthesize_pmh_logic_64(p_box2, 10));
         
         println!("Are they equal? {}", state1 == state2);
-        panic!("Show output");
+        assert_ne!(state1, state2);
     }
 }

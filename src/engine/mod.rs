@@ -20,6 +20,8 @@ include!("continuous_poly.rs");
 include!("evaluator.rs");
 include!("reduction.rs");
 include!("tests.rs");
+include!("reference.rs");
+include!("soundness_tests.rs");
 include!("pmh.rs");
 include!("steiner.rs");
 
@@ -47,6 +49,8 @@ macro_rules! generate_phase_engine {
             pub mod tests {
                 use super::*;
                 define_tests_logic!($primitive, $phase_shift);
+                define_reference_logic!($primitive);
+                define_soundness_tests_logic!($primitive);
             }
         }
     };

@@ -42,6 +42,19 @@ pub fn id_pathsum_logic_64(num_qubits: i64) -> PSum64 {
     }
 }
 
+pub fn zero_state_logic_64(num_qubits: i64) -> PSum64 {
+    if num_qubits <= 0 {
+        PSum64::new(engine_64::EvaluatedPathSum::new_zero_state(0))
+    } else {
+        PSum64::new(engine_64::EvaluatedPathSum::new_zero_state(num_qubits as u32))
+    }
+}
+
+pub fn basis_state_logic_64(num_qubits: i64, comp_mask: i64, val_mask: i64) -> PSum64 {
+    let n = if num_qubits <= 0 { 0 } else { num_qubits as u32 };
+    PSum64::new(engine_64::EvaluatedPathSum::new_basis_state(n, comp_mask as u64, val_mask as u64))
+}
+
 pub fn apply_gate_logic_64<F>(state: PSum64, q: i64, op: F) -> PSum64
 where
     F: Fn(&mut engine_64::EvaluatedPathSum, usize),
@@ -119,6 +132,19 @@ pub fn id_pathsum_logic_128(num_qubits: i64) -> PSum128 {
     } else {
         PSum128::new(engine_128::EvaluatedPathSum::new_id(num_qubits as u32))
     }
+}
+
+pub fn zero_state_logic_128(num_qubits: i64) -> PSum128 {
+    if num_qubits <= 0 {
+        PSum128::new(engine_128::EvaluatedPathSum::new_zero_state(0))
+    } else {
+        PSum128::new(engine_128::EvaluatedPathSum::new_zero_state(num_qubits as u32))
+    }
+}
+
+pub fn basis_state_logic_128(num_qubits: i64, comp_mask: i64, val_mask: i64) -> PSum128 {
+    let n = if num_qubits <= 0 { 0 } else { num_qubits as u32 };
+    PSum128::new(engine_128::EvaluatedPathSum::new_basis_state(n, comp_mask as u128, val_mask as u128))
 }
 
 pub fn apply_gate_logic_128<F>(state: PSum128, q: i64, op: F) -> PSum128
@@ -597,6 +623,8 @@ impl BaseSort for PathSumSort64 {
 
     fn register_primitives(&self, eg: &mut EGraph) {
         add_primitive!(eg, "rust_id_pathsum_64" = |q: i64| -> PSum64 { id_pathsum_logic_64(q) });
+        add_primitive!(eg, "rust_zero_state_64" = |q: i64| -> PSum64 { zero_state_logic_64(q) });
+        add_primitive!(eg, "rust_basis_state_64" = |q: i64, c: i64, v: i64| -> PSum64 { basis_state_logic_64(q, c, v) });
         add_primitive!(eg, "rust_apply_x_64" = |s: PSum64, q: i64| -> PSum64 { apply_gate_no_reduce_logic_64(s, q, |st, q_| st.apply_x(q_)) });
         add_primitive!(eg, "rust_apply_z_64" = |s: PSum64, q: i64| -> PSum64 { apply_gate_logic_64(s, q, |st, q_| st.apply_z(q_)) });
         add_primitive!(eg, "rust_apply_s_64" = |s: PSum64, q: i64| -> PSum64 { apply_gate_logic_64(s, q, |st, q_| st.apply_s(q_)) });
@@ -627,6 +655,8 @@ impl BaseSort for PathSumSort128 {
 
     fn register_primitives(&self, eg: &mut EGraph) {
         add_primitive!(eg, "rust_id_pathsum_128" = |q: i64| -> PSum128 { id_pathsum_logic_128(q) });
+        add_primitive!(eg, "rust_zero_state_128" = |q: i64| -> PSum128 { zero_state_logic_128(q) });
+        add_primitive!(eg, "rust_basis_state_128" = |q: i64, c: i64, v: i64| -> PSum128 { basis_state_logic_128(q, c, v) });
         add_primitive!(eg, "rust_apply_x_128" = |s: PSum128, q: i64| -> PSum128 { apply_gate_no_reduce_logic_128(s, q, |st, q_| st.apply_x(q_)) });
         add_primitive!(eg, "rust_apply_z_128" = |s: PSum128, q: i64| -> PSum128 { apply_gate_logic_128(s, q, |st, q_| st.apply_z(q_)) });
         add_primitive!(eg, "rust_apply_s_128" = |s: PSum128, q: i64| -> PSum128 { apply_gate_logic_128(s, q, |st, q_| st.apply_s(q_)) });

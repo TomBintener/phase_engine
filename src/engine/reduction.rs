@@ -7,6 +7,20 @@ macro_rules! define_reduction_logic {
         $poly_capacity:expr
     ) => {
         impl EvaluatedPathSum {
+            /// Returns true if the variable appears in `out_state` or in a continuous
+            /// phase parity. Such a variable must never be integrated out, since the
+            /// summation identities used by `reduce()` only hold for variables that
+            /// occur exclusively in the discrete phase polynomial.
+            #[inline(always)]
+            fn is_var_live(
+                out_state: &[BooleanPoly],
+                continuous: &ContinuousPhasePoly,
+                v_mask: $primitive,
+            ) -> bool {
+                out_state.iter().any(|p| (p.variable_mask & v_mask) != 0)
+                    || continuous.parities.iter().any(|p| (p.variable_mask & v_mask) != 0)
+            }
+
             pub fn reduce(&mut self) {
                 let mut overall_changed = true;
                 while overall_changed {
@@ -152,14 +166,10 @@ macro_rules! define_reduction_logic {
                             if !is_valid_pivot { continue; }
 
                             if base_phase == 2 || base_phase == 6 {
-                                let mut in_continuous = false;
-                                for parity in &self.continuous_poly.parities {
-                                    if (parity.variable_mask & v_mask) != 0 {
-                                        in_continuous = true;
-                                        break;
-                                    }
-                                }
-                                if in_continuous { continue; }
+                                // Re-verify liveness against the live structures; `global_out_mask`
+                                // is only a fast pre-filter and can lag behind substitutions
+                                // performed earlier in this pass.
+                                if Self::is_var_live(&self.out_state, &self.continuous_poly, v_mask) { continue; }
 
                                 changed = true;
                                 let e_poly = BooleanPoly::from_mask(p_mask);
@@ -182,16 +192,19 @@ macro_rules! define_reduction_logic {
                             let valid_pivots = p_mask & path_var_mask & !dead_vars;
                             if valid_pivots == 0 { continue; }
 
+                            // Re-verify liveness against the live structures; `global_out_mask`
+                            // is only a fast pre-filter and can lag behind substitutions
+                            // performed earlier in this pass.
+                            if Self::is_var_live(&self.out_state, &self.continuous_poly, v_mask) { continue; }
+
                             changed = true;
                             let pivot_index = valid_pivots.trailing_zeros();
                             let u_mask = 1 as $primitive << pivot_index;
                             let e_mask = p_mask ^ u_mask;
                             let e_poly = BooleanPoly::from_mask(e_mask);
 
-                            let mut out_state_changed = false;
                             for poly in &mut self.out_state {
                                 if (poly.variable_mask & u_mask) == 0 { continue; }
-                                out_state_changed = true;
                                 let mut distributed_terms = SmallVec::<[$primitive; $poly_capacity]>::new();
                                 poly.terms.retain(|t| {
                                     if (*t & u_mask) != 0 {
@@ -211,26 +224,29 @@ macro_rules! define_reduction_logic {
                                 }
                             }
 
-                            if out_state_changed {
-                                global_out_mask = self.out_state.iter().fold(0, |acc, p| acc | p.variable_mask);
-                                for parity in &self.continuous_poly.parities {
-                                    global_out_mask |= parity.variable_mask;
-                                }
-                            }
-
                             self.continuous_poly.substitute(u_mask, &e_poly);
                             continuous_needs_compact = true;
+
+                            // Substituting `u := E` can make E's variables live in `out_state`
+                            // and `continuous_poly`. Refresh the liveness mask immediately so
+                            // subsequent candidates in this pass are judged against the
+                            // current state rather than a stale snapshot.
+                            global_out_mask = self.out_state.iter().fold(0, |acc, p| acc | p.variable_mask);
+                            for parity in &self.continuous_poly.parities {
+                                global_out_mask |= parity.variable_mask;
+                            }
 
                             let mut next_gen_terms = Vec::new();
                             for term in self.phase_poly.terms.iter() {
                                 let mono = term.monomial();
                                 if (mono & v_mask) != 0 { continue; }
                                 if (mono & u_mask) != 0 {
+                                    // Exact substitution u := E in a mod-8 phase term requires
+                                    // the full multilinear XOR expansion. Distributing linearly
+                                    // over E's terms is only valid for pi (phase 4) coefficients
+                                    // and silently corrupted S/T-phase terms before.
                                     let base = mono & !u_mask;
-                                    for &e_term in &e_poly.terms {
-                                        let new_mono = if e_term == 0 { base } else { base | e_term };
-                                        next_gen_terms.push(PackedPhaseTerm::create(new_mono, term.phase()));
-                                    }
+                                    Self::push_xor_phase_expansion(&mut next_gen_terms, base, &e_poly.terms, term.phase());
                                 } else {
                                     next_gen_terms.push(*term);
                                 }
