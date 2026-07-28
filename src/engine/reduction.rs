@@ -41,80 +41,134 @@ macro_rules! define_reduction_logic {
 
                     let mut continuous_needs_compact = false;
                     
+                    // Signature-based variable merging (replaces the O(m^2)
+                    // pairwise rescans). For every path variable, one pass over
+                    // `out_state` and the continuous parities collects (a) the
+                    // ordered list of structures in which it occurs linearly
+                    // and (b) whether it occurs nonlinearly anywhere.
+                    // Eligibility never reads `phase_poly`. Two variables are
+                    // mergeable iff neither is nonlinear and their linear
+                    // occurrence lists are identical and non-empty.
+                    //
+                    // A committed merge only deletes the *lower* variable's
+                    // linear occurrences (parities stay pairwise distinct, so
+                    // no parity collapse/cancellation can occur), leaving every
+                    // other variable's signature intact; groups computed once
+                    // per pass therefore stay valid. Within a group
+                    // {g1 < g2 < ... < gk} only the chained adjacent pairs
+                    // (g1,g2), (g2,g3), ..., (g(k-1),gk) are replayed — after
+                    // (g1,g2) commits, g1 occurs nowhere, so the sequential
+                    // algorithm would skip every later g1 pairing. Committing
+                    // all pairs in ascending (v1, v2) lexicographic order, with
+                    // the exact per-pair phase rewrite between commits, matches
+                    // the sequential restart-per-merge order: each sequential
+                    // restart picks the smallest eligible pair, and the chain
+                    // link (g_i, g_{i+1}) always precedes (g_i, g_j) for
+                    // j > i+1.
                     let mut basis_changed = false;
-                    for v1_idx in self.num_qubits..self.num_qubits + original_num_path_vars {
-                        let v1_mask = 1 as $primitive << v1_idx;
-                        if (dead_vars & v1_mask) != 0 { continue; }
-                        
-                        for v2_idx in v1_idx + 1..self.num_qubits + original_num_path_vars {
-                            let v2_mask = 1 as $primitive << v2_idx;
-                            if (dead_vars & v2_mask) != 0 { continue; }
-                            
-                            let mut identical = true;
-                            let mut appears_anywhere = false;
-                            
-                            for poly in &self.out_state {
-                                let has_v1 = poly.terms.iter().any(|&t| t == v1_mask);
-                                let has_v2 = poly.terms.iter().any(|&t| t == v2_mask);
-                                if has_v1 || has_v2 { appears_anywhere = true; }
-                                if has_v1 != has_v2 { identical = false; break; }
-                                
-                                let has_nonlinear_v1 = poly.terms.iter().any(|&t| t != v1_mask && (t & v1_mask) != 0);
-                                let has_nonlinear_v2 = poly.terms.iter().any(|&t| t != v2_mask && (t & v2_mask) != 0);
-                                if has_nonlinear_v1 || has_nonlinear_v2 { identical = false; break; }
-                            }
-                            
-                            if identical {
-                                for parity in &self.continuous_poly.parities {
-                                    let has_v1 = parity.terms.iter().any(|&t| t == v1_mask);
-                                    let has_v2 = parity.terms.iter().any(|&t| t == v2_mask);
-                                    if has_v1 || has_v2 { appears_anywhere = true; }
-                                    if has_v1 != has_v2 { identical = false; break; }
-                                    
-                                    let has_nonlinear_v1 = parity.terms.iter().any(|&t| t != v1_mask && (t & v1_mask) != 0);
-                                    let has_nonlinear_v2 = parity.terms.iter().any(|&t| t != v2_mask && (t & v2_mask) != 0);
-                                    if has_nonlinear_v1 || has_nonlinear_v2 { identical = false; break; }
-                                }
-                            }
-                            
-                            if identical && appears_anywhere {
-                                basis_changed = true;
-                                
-                                for poly in &mut self.out_state {
-                                    poly.terms.retain(|t| *t != v1_mask);
-                                    poly.variable_mask = poly.terms.iter().fold(0, |acc, &x| acc | x);
-                                }
-                                for parity in &mut self.continuous_poly.parities {
-                                    parity.terms.retain(|t| *t != v1_mask);
-                                    parity.variable_mask = parity.terms.iter().fold(0, |acc, &x| acc | x);
-                                }
-                                
-                                let mut new_phase_terms = Vec::with_capacity(self.phase_poly.terms.len() * 3);
-                                for term in self.phase_poly.terms.iter() {
-                                    let mono = term.monomial();
-                                    let phase = term.phase();
-                                    if (mono & v2_mask) != 0 {
-                                        let base = mono & !v2_mask;
-                                        if (base & v1_mask) != 0 {
-                                            let real_base = base & !v1_mask;
-                                            new_phase_terms.push(PackedPhaseTerm::create(v1_mask | real_base, phase));
-                                            new_phase_terms.push(PackedPhaseTerm::create(mono, (8 - phase) % 8));
-                                        } else {
-                                            new_phase_terms.push(PackedPhaseTerm::create(mono, phase));
-                                            new_phase_terms.push(PackedPhaseTerm::create(v1_mask | base, phase));
-                                            let minus_2c = (8 - (2 * phase) % 8) % 8;
-                                            new_phase_terms.push(PackedPhaseTerm::create(v1_mask | mono, minus_2c));
-                                        }
+                    if original_num_path_vars >= 2 {
+                        let lo = self.num_qubits as usize;
+                        let m = original_num_path_vars as usize;
+                        let mut nonlinear = vec![false; m];
+                        let mut lin_occ: Vec<Vec<u32>> = vec![Vec::new(); m];
+
+                        fn scan_structure(
+                            terms: &[$primitive],
+                            path_var_mask: $primitive,
+                            lo: usize,
+                            structure_id: u32,
+                            nonlinear: &mut [bool],
+                            lin_occ: &mut [Vec<u32>],
+                        ) {
+                            for &t in terms {
+                                let mut pv = t & path_var_mask;
+                                if pv == 0 { continue; }
+                                // Linear occurrence: the term is exactly one
+                                // path-variable bit. Anything else touching a
+                                // path variable is a nonlinear occurrence.
+                                let linear = pv == t && (pv & (pv - 1)) == 0;
+                                while pv != 0 {
+                                    let idx = pv.trailing_zeros() as usize - lo;
+                                    pv &= pv - 1;
+                                    if linear {
+                                        lin_occ[idx].push(structure_id);
                                     } else {
-                                        new_phase_terms.push(*term);
+                                        nonlinear[idx] = true;
                                     }
                                 }
-                                self.phase_poly.terms.clear();
-                                self.phase_poly.merge_unsorted_batch(new_phase_terms);
-                                break;
                             }
                         }
-                        if basis_changed { break; }
+
+                        let mut structure_id = 0u32;
+                        for poly in &self.out_state {
+                            scan_structure(&poly.terms, path_var_mask, lo, structure_id, &mut nonlinear, &mut lin_occ);
+                            structure_id += 1;
+                        }
+                        for parity in &self.continuous_poly.parities {
+                            scan_structure(&parity.terms, path_var_mask, lo, structure_id, &mut nonlinear, &mut lin_occ);
+                            structure_id += 1;
+                        }
+
+                        // Group eligible variables by signature. Variables with
+                        // an all-empty signature appear nowhere linearly and are
+                        // skipped entirely (the sequential code never merges
+                        // them: `appears_anywhere == false`).
+                        let mut eligible: Vec<usize> = (0..m)
+                            .filter(|&i| !nonlinear[i] && !lin_occ[i].is_empty())
+                            .collect();
+                        eligible.sort_by(|&a, &b| lin_occ[a].cmp(&lin_occ[b]).then(a.cmp(&b)));
+
+                        let mut pairs: Vec<(usize, usize)> = Vec::new();
+                        let mut g = 0;
+                        while g < eligible.len() {
+                            let mut h = g + 1;
+                            while h < eligible.len() && lin_occ[eligible[h]] == lin_occ[eligible[g]] {
+                                pairs.push((eligible[h - 1], eligible[h]));
+                                h += 1;
+                            }
+                            g = h;
+                        }
+                        // Ascending (v1, v2) commit order across groups equals
+                        // the sequential commit order.
+                        pairs.sort_unstable();
+
+                        for &(i1, i2) in &pairs {
+                            let v1_mask = 1 as $primitive << (lo + i1);
+                            let v2_mask = 1 as $primitive << (lo + i2);
+                            basis_changed = true;
+
+                            for poly in &mut self.out_state {
+                                poly.terms.retain(|t| *t != v1_mask);
+                                poly.variable_mask = poly.terms.iter().fold(0, |acc, &x| acc | x);
+                            }
+                            for parity in &mut self.continuous_poly.parities {
+                                parity.terms.retain(|t| *t != v1_mask);
+                                parity.variable_mask = parity.terms.iter().fold(0, |acc, &x| acc | x);
+                            }
+
+                            let mut new_phase_terms = Vec::with_capacity(self.phase_poly.terms.len() * 3);
+                            for term in self.phase_poly.terms.iter() {
+                                let mono = term.monomial();
+                                let phase = term.phase();
+                                if (mono & v2_mask) != 0 {
+                                    let base = mono & !v2_mask;
+                                    if (base & v1_mask) != 0 {
+                                        let real_base = base & !v1_mask;
+                                        new_phase_terms.push(PackedPhaseTerm::create(v1_mask | real_base, phase));
+                                        new_phase_terms.push(PackedPhaseTerm::create(mono, (8 - phase) % 8));
+                                    } else {
+                                        new_phase_terms.push(PackedPhaseTerm::create(mono, phase));
+                                        new_phase_terms.push(PackedPhaseTerm::create(v1_mask | base, phase));
+                                        let minus_2c = (8 - (2 * phase) % 8) % 8;
+                                        new_phase_terms.push(PackedPhaseTerm::create(v1_mask | mono, minus_2c));
+                                    }
+                                } else {
+                                    new_phase_terms.push(*term);
+                                }
+                            }
+                            self.phase_poly.terms.clear();
+                            self.phase_poly.merge_unsorted_batch(new_phase_terms);
+                        }
                     }
                     
                     if basis_changed {
@@ -127,6 +181,62 @@ macro_rules! define_reduction_logic {
                         continue;
                     }
 
+                    // Per-sweep pivot index: one O(T*k) pass over `phase_poly`
+                    // collects, for every path variable, the pivot partner
+                    // mask, base phase, and validity flag — replacing the
+                    // per-candidate O(T) rescans. Staleness discipline: the
+                    // index is a pre-filter/cache only. It is rebuilt after
+                    // every committed pivot (the `u := E` substitution
+                    // rewrites `phase_poly` and can change other variables'
+                    // pivot data), and the exact `is_var_live` re-checks plus
+                    // the post-substitution `global_out_mask` refresh below
+                    // stay in place unchanged.
+                    fn build_pivot_index(
+                        phase_terms: &[PackedPhaseTerm],
+                        path_var_mask: $primitive,
+                        partner: &mut [$primitive],
+                        base: &mut [u8],
+                        invalid: &mut [bool],
+                    ) {
+                        partner.fill(0);
+                        base.fill(0);
+                        invalid.fill(false);
+                        for term in phase_terms {
+                            let mono = term.monomial();
+                            let phase = term.phase();
+                            let mut pv = mono & path_var_mask;
+                            while pv != 0 {
+                                let bit_idx = pv.trailing_zeros() as usize;
+                                pv &= pv - 1;
+                                let v_mask = 1 as $primitive << bit_idx;
+                                let remaining = mono & !v_mask;
+                                if remaining == 0 {
+                                    if phase == 4 {
+                                        partner[bit_idx] ^= 1 as $primitive << (<$primitive>::BITS - 1);
+                                        base[bit_idx] = 4;
+                                    } else if phase == 2 || phase == 6 {
+                                        base[bit_idx] = phase;
+                                    } else {
+                                        invalid[bit_idx] = true;
+                                    }
+                                } else if remaining.count_ones() == 1 {
+                                    if phase == 4 {
+                                        partner[bit_idx] ^= remaining;
+                                    } else {
+                                        invalid[bit_idx] = true;
+                                    }
+                                } else {
+                                    invalid[bit_idx] = true;
+                                }
+                            }
+                        }
+                    }
+
+                    let mut piv_partner = [0 as $primitive; <$primitive>::BITS as usize];
+                    let mut piv_base = [0u8; <$primitive>::BITS as usize];
+                    let mut piv_invalid = [false; <$primitive>::BITS as usize];
+                    build_pivot_index(&self.phase_poly.terms, path_var_mask, &mut piv_partner, &mut piv_base, &mut piv_invalid);
+
                     let mut changed = true;
                     while changed {
                         changed = false;
@@ -135,35 +245,9 @@ macro_rules! define_reduction_logic {
                             if (dead_vars & v_mask) != 0 { continue; }
                             if (global_out_mask & v_mask) != 0 { continue; }
 
-                            let mut p_mask = 0 as $primitive;
-                            let mut is_valid_pivot = true;
-                            let mut base_phase = 0u8;
-                            for term in &self.phase_poly.terms {
-                                let mono = term.monomial();
-                                if (mono & v_mask) != 0 {
-                                    let remaining = mono & !v_mask;
-                                    if remaining == 0 {
-                                        let phase = term.phase();
-                                        if phase == 4 {
-                                            p_mask ^= 1 as $primitive << (<$primitive>::BITS - 1);
-                                            base_phase = 4;
-                                        } else if phase == 2 || phase == 6 {
-                                            base_phase = phase;
-                                        } else {
-                                            is_valid_pivot = false;
-                                            break;
-                                        }
-                                    } else if remaining.count_ones() == 1 {
-                                        if term.phase() != 4 { is_valid_pivot = false; break; }
-                                        p_mask ^= remaining;
-                                    } else {
-                                        is_valid_pivot = false;
-                                        break;
-                                    }
-                                }
-                            }
-
-                            if !is_valid_pivot { continue; }
+                            if piv_invalid[v_idx as usize] { continue; }
+                            let p_mask = piv_partner[v_idx as usize];
+                            let base_phase = piv_base[v_idx as usize];
 
                             if base_phase == 2 || base_phase == 6 {
                                 // Re-verify liveness against the live structures; `global_out_mask`
@@ -186,6 +270,9 @@ macro_rules! define_reduction_logic {
                                 let phase_to_add = if base_phase == 2 { 6 } else { 2 };
                                 self.push_phase_expansion(&e_poly.terms, phase_to_add);
                                 dead_vars |= v_mask;
+                                // The elimination rewrote phase_poly: rebuild the
+                                // pivot index before judging further candidates.
+                                build_pivot_index(&self.phase_poly.terms, path_var_mask, &mut piv_partner, &mut piv_base, &mut piv_invalid);
                                 continue;
                             }
 
@@ -254,6 +341,9 @@ macro_rules! define_reduction_logic {
                             self.phase_poly.terms.clear();
                             self.phase_poly.merge_unsorted_batch(next_gen_terms);
                             dead_vars |= v_mask | u_mask;
+                            // The substitution rewrote phase_poly: rebuild the
+                            // pivot index before judging further candidates.
+                            build_pivot_index(&self.phase_poly.terms, path_var_mask, &mut piv_partner, &mut piv_base, &mut piv_invalid);
                         }
                     }
 
