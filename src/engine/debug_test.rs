@@ -25,7 +25,7 @@ mod debug_tests {
             print!("(mask={}, phase_unit={}) ", mask, phase_unit);
         }
         println!();
-        let p_box1 = egglog_core_relations::Boxed(state1.clone());
+        let p_box1 = egglog_core_relations::Boxed(std::sync::Arc::new(state1.clone()));
         println!("  Synthesized Steiner: {}", synthesize_steiner_logic_64(p_box1.clone(), 10, 0, "".to_string(), 1, 1));
         println!("  Synthesized PMH: {}", crate::pathsum::synthesize_pmh_logic_64(p_box1, 10));
 
@@ -44,7 +44,7 @@ mod debug_tests {
             print!("(mask={}, phase_unit={}) ", mask, phase_unit);
         }
         println!();
-        let p_box2 = egglog_core_relations::Boxed(state2.clone());
+        let p_box2 = egglog_core_relations::Boxed(std::sync::Arc::new(state2.clone()));
         println!("  Synthesized Steiner: {}", synthesize_steiner_logic_64(p_box2.clone(), 10, 0, "".to_string(), 1, 1));
         println!("  Synthesized PMH: {}", crate::pathsum::synthesize_pmh_logic_64(p_box2, 10));
         

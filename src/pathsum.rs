@@ -27,32 +27,40 @@ use crate::ast::Literal;
 use crate::{TermId, TermDag};
 use crate::engine::engine_64::EvaluatedPathSum as EvaluatedPathSum64;
 use crate::engine::engine_128::EvaluatedPathSum as EvaluatedPathSum128;
+use std::sync::Arc;
 
-// Define type aliases for the 64-bit and 128-bit engines
-pub type PSum64 = Boxed<engine_64::EvaluatedPathSum>;
-pub type PSum128 = Boxed<engine_128::EvaluatedPathSum>;
+// Define type aliases for the 64-bit and 128-bit engines.
+//
+// The interned state is Arc-wrapped: `Arc<T>` delegates `Hash`/`Eq`/`Debug`
+// to `T`, so interning semantics and canonical-form equality are bit-identical
+// to the plain `Boxed<EvaluatedPathSum>`, while `InternTable::get_cloned` (one
+// deep clone per FFI argument) and the intern-miss store both become refcount
+// bumps. Mutating wrappers pay exactly one content copy via
+// `Arc::unwrap_or_clone`; read-only wrappers pay zero.
+pub type PSum64 = Boxed<Arc<engine_64::EvaluatedPathSum>>;
+pub type PSum128 = Boxed<Arc<engine_128::EvaluatedPathSum>>;
 
 // --- Logic for the 64-bit Engine ---
 
 pub fn id_pathsum_logic_64(num_qubits: i64) -> PSum64 {
     if num_qubits <= 0 {
-        PSum64::new(engine_64::EvaluatedPathSum::new_id(0))
+        PSum64::new(Arc::new(engine_64::EvaluatedPathSum::new_id(0)))
     } else {
-        PSum64::new(engine_64::EvaluatedPathSum::new_id(num_qubits as u32))
+        PSum64::new(Arc::new(engine_64::EvaluatedPathSum::new_id(num_qubits as u32)))
     }
 }
 
 pub fn zero_state_logic_64(num_qubits: i64) -> PSum64 {
     if num_qubits <= 0 {
-        PSum64::new(engine_64::EvaluatedPathSum::new_zero_state(0))
+        PSum64::new(Arc::new(engine_64::EvaluatedPathSum::new_zero_state(0)))
     } else {
-        PSum64::new(engine_64::EvaluatedPathSum::new_zero_state(num_qubits as u32))
+        PSum64::new(Arc::new(engine_64::EvaluatedPathSum::new_zero_state(num_qubits as u32)))
     }
 }
 
 pub fn basis_state_logic_64(num_qubits: i64, comp_mask: i64, val_mask: i64) -> PSum64 {
     let n = if num_qubits <= 0 { 0 } else { num_qubits as u32 };
-    PSum64::new(engine_64::EvaluatedPathSum::new_basis_state(n, comp_mask as u64, val_mask as u64))
+    PSum64::new(Arc::new(engine_64::EvaluatedPathSum::new_basis_state(n, comp_mask as u64, val_mask as u64)))
 }
 
 pub fn apply_gate_logic_64<F>(state: PSum64, q: i64, op: F) -> PSum64
@@ -62,12 +70,12 @@ where
     if q < 0 || q as usize >= state.num_qubits as usize {
         return state;
     }
-    // The argument is already a fresh deep clone from `get_cloned`; move it
-    // out instead of cloning a second time.
-    let mut new_state = state.into_inner();
+    // One content copy exactly where the gate needs an owned state: moves the
+    // value out when this Arc is unique, clones otherwise.
+    let mut new_state = Arc::unwrap_or_clone(state.into_inner());
     op(&mut new_state, q as usize);
     new_state.reduce();
-    PSum64::new(new_state)
+    PSum64::new(Arc::new(new_state))
 }
 
 pub fn apply_gate_no_reduce_logic_64<F>(state: PSum64, q: i64, op: F) -> PSum64
@@ -77,9 +85,9 @@ where
     if q < 0 || q as usize >= state.num_qubits as usize {
         return state;
     }
-    let mut new_state = state.into_inner();
+    let mut new_state = Arc::unwrap_or_clone(state.into_inner());
     op(&mut new_state, q as usize);
-    PSum64::new(new_state)
+    PSum64::new(Arc::new(new_state))
 }
 
 pub fn apply_cx_logic_64(state: PSum64, qc: i64, qt: i64) -> PSum64 {
@@ -88,19 +96,19 @@ pub fn apply_cx_logic_64(state: PSum64, qc: i64, qt: i64) -> PSum64 {
        qt as usize >= state.num_qubits as usize {
         return state;
     }
-    let mut new_state = state.into_inner();
+    let mut new_state = Arc::unwrap_or_clone(state.into_inner());
     new_state.apply_cx(qc as usize, qt as usize);
-    PSum64::new(new_state)
+    PSum64::new(Arc::new(new_state))
 }
 
 pub fn apply_rz_logic_64(state: PSum64, q: i64, theta_bits: i64) -> PSum64 {
     if q < 0 || q as usize >= state.num_qubits as usize {
         return state;
     }
-    let mut new_state = state.into_inner();
+    let mut new_state = Arc::unwrap_or_clone(state.into_inner());
     new_state.apply_rz(q as usize, f64::from_bits(theta_bits as u64));
     new_state.reduce();
-    PSum64::new(new_state)
+    PSum64::new(Arc::new(new_state))
 }
 
 const SNAP_PRECISION: f64 = 100_000_000.0;
@@ -130,23 +138,23 @@ pub fn rust_negate_rz_bits_logic(a: i64) -> i64 {
 
 pub fn id_pathsum_logic_128(num_qubits: i64) -> PSum128 {
     if num_qubits <= 0 {
-        PSum128::new(engine_128::EvaluatedPathSum::new_id(0))
+        PSum128::new(Arc::new(engine_128::EvaluatedPathSum::new_id(0)))
     } else {
-        PSum128::new(engine_128::EvaluatedPathSum::new_id(num_qubits as u32))
+        PSum128::new(Arc::new(engine_128::EvaluatedPathSum::new_id(num_qubits as u32)))
     }
 }
 
 pub fn zero_state_logic_128(num_qubits: i64) -> PSum128 {
     if num_qubits <= 0 {
-        PSum128::new(engine_128::EvaluatedPathSum::new_zero_state(0))
+        PSum128::new(Arc::new(engine_128::EvaluatedPathSum::new_zero_state(0)))
     } else {
-        PSum128::new(engine_128::EvaluatedPathSum::new_zero_state(num_qubits as u32))
+        PSum128::new(Arc::new(engine_128::EvaluatedPathSum::new_zero_state(num_qubits as u32)))
     }
 }
 
 pub fn basis_state_logic_128(num_qubits: i64, comp_mask: i64, val_mask: i64) -> PSum128 {
     let n = if num_qubits <= 0 { 0 } else { num_qubits as u32 };
-    PSum128::new(engine_128::EvaluatedPathSum::new_basis_state(n, comp_mask as u128, val_mask as u128))
+    PSum128::new(Arc::new(engine_128::EvaluatedPathSum::new_basis_state(n, comp_mask as u128, val_mask as u128)))
 }
 
 pub fn apply_gate_logic_128<F>(state: PSum128, q: i64, op: F) -> PSum128
@@ -156,12 +164,12 @@ where
     if q < 0 || q as usize >= state.num_qubits as usize {
         return state;
     }
-    // The argument is already a fresh deep clone from `get_cloned`; move it
-    // out instead of cloning a second time.
-    let mut new_state = state.into_inner();
+    // One content copy exactly where the gate needs an owned state: moves the
+    // value out when this Arc is unique, clones otherwise.
+    let mut new_state = Arc::unwrap_or_clone(state.into_inner());
     op(&mut new_state, q as usize);
     new_state.reduce();
-    PSum128::new(new_state)
+    PSum128::new(Arc::new(new_state))
 }
 
 pub fn apply_gate_no_reduce_logic_128<F>(state: PSum128, q: i64, op: F) -> PSum128
@@ -171,9 +179,9 @@ where
     if q < 0 || q as usize >= state.num_qubits as usize {
         return state;
     }
-    let mut new_state = state.into_inner();
+    let mut new_state = Arc::unwrap_or_clone(state.into_inner());
     op(&mut new_state, q as usize);
-    PSum128::new(new_state)
+    PSum128::new(Arc::new(new_state))
 }
 
 pub fn apply_cx_logic_128(state: PSum128, qc: i64, qt: i64) -> PSum128 {
@@ -182,19 +190,19 @@ pub fn apply_cx_logic_128(state: PSum128, qc: i64, qt: i64) -> PSum128 {
        qt as usize >= state.num_qubits as usize {
         return state;
     }
-    let mut new_state = state.into_inner();
+    let mut new_state = Arc::unwrap_or_clone(state.into_inner());
     new_state.apply_cx(qc as usize, qt as usize);
-    PSum128::new(new_state)
+    PSum128::new(Arc::new(new_state))
 }
 
 pub fn apply_rz_logic_128(state: PSum128, q: i64, theta_bits: i64) -> PSum128 {
     if q < 0 || q as usize >= state.num_qubits as usize {
         return state;
     }
-    let mut new_state = state.into_inner();
+    let mut new_state = Arc::unwrap_or_clone(state.into_inner());
     new_state.apply_rz(q as usize, f64::from_bits(theta_bits as u64));
     new_state.reduce();
-    PSum128::new(new_state)
+    PSum128::new(Arc::new(new_state))
 }
 
 fn rank_m_minus_i_64(state: &EvaluatedPathSum64) -> i64 {
