@@ -234,6 +234,81 @@ macro_rules! ffi_bench {
     }};
 }
 
+/// Read-only FFI round trip: every egglog primitive materializes its PathSum
+/// argument via `BaseValues::unwrap` (an `InternTable::get_cloned`), even
+/// primitives that never mutate the state (`synthesize_pmh/steiner`, `debug`).
+/// This isolates that argument-materialization cost: states are interned once,
+/// then repeatedly unwrapped and fed to a real read-only primitive.
+macro_rules! ffi_read_bench {
+    ($engine:ident, $tag:expr, $psum:ident, $zero:ident, $gate:ident, $no_reduce:ident, $cx:ident, $rz:ident, $pmh:ident) => {{
+        use egglog::pathsum::*;
+        let mut grand_total_reads = 0usize;
+        let mut grand_total_secs = 0.0f64;
+        for n in 2..=10usize {
+            let windows = gen_windows(n, $tag);
+            let mut bv = BaseValues::default();
+            bv.register_type::<$psum>();
+            let mut values = Vec::new();
+            for w in &windows {
+                let mut v = bv.get($zero(n as i64));
+                values.push(v);
+                for g in w {
+                    let state: $psum = bv.unwrap(v);
+                    let next = match *g {
+                        Gate::X(q) => $no_reduce(state, q as i64, |st, q_| st.apply_x(q_)),
+                        Gate::Z(q) => $gate(state, q as i64, |st, q_| st.apply_z(q_)),
+                        Gate::Sx(q) => {
+                            if state.num_path_vars > PATH_VAR_CAP {
+                                $gate(state, q as i64, |st, q_| st.apply_z(q_))
+                            } else {
+                                $gate(state, q as i64, |st, q_| st.apply_sx(q_))
+                            }
+                        }
+                        Gate::Rz(q, theta) => $rz(state, q as i64, theta.to_bits() as i64),
+                        Gate::Cx(qc, qt) => $cx(state, qc as i64, qt as i64),
+                    };
+                    v = bv.get(next);
+                    values.push(v);
+                }
+            }
+            let run_all = || {
+                let mut acc = 0usize;
+                for &v in &values {
+                    let state: $psum = bv.unwrap(v);
+                    acc += std::hint::black_box($pmh(state, 3)).len();
+                }
+                acc
+            };
+            // Warmup
+            std::hint::black_box(run_all());
+            let mut times = Vec::with_capacity(REPS);
+            for _ in 0..REPS {
+                let start = Instant::now();
+                std::hint::black_box(run_all());
+                times.push(start.elapsed().as_secs_f64());
+            }
+            let med = median(times);
+            grand_total_reads += values.len();
+            grand_total_secs += med;
+            println!(
+                "bench=ffi_read engine={} qubits={} reads={} median_ms={:.3} kreads_per_s={:.1}",
+                stringify!($engine),
+                n,
+                values.len(),
+                med * 1e3,
+                values.len() as f64 / med / 1e3
+            );
+        }
+        println!(
+            "bench=ffi_read engine={} TOTAL reads={} secs={:.4} kreads_per_s={:.1}",
+            stringify!($engine),
+            grand_total_reads,
+            grand_total_secs,
+            grand_total_reads as f64 / grand_total_secs / 1e3
+        );
+    }};
+}
+
 fn main() {
     println!("pathsum_benchmarking seed={SEED:#x} windows={WINDOWS_PER_CONFIG} reps={REPS}");
     engine_bench!(engine_64, 64);
@@ -257,5 +332,27 @@ fn main() {
         apply_gate_no_reduce_logic_128,
         apply_cx_logic_128,
         apply_rz_logic_128
+    );
+    ffi_read_bench!(
+        engine_64,
+        64,
+        PSum64,
+        zero_state_logic_64,
+        apply_gate_logic_64,
+        apply_gate_no_reduce_logic_64,
+        apply_cx_logic_64,
+        apply_rz_logic_64,
+        synthesize_pmh_logic_64
+    );
+    ffi_read_bench!(
+        engine_128,
+        128,
+        PSum128,
+        zero_state_logic_128,
+        apply_gate_logic_128,
+        apply_gate_no_reduce_logic_128,
+        apply_cx_logic_128,
+        apply_rz_logic_128,
+        synthesize_pmh_logic_128
     );
 }
