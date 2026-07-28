@@ -20,7 +20,7 @@ mod exec_state;
 pub mod extract;
 pub mod prelude;
 mod proofs;
-mod pathsum;
+pub mod pathsum;
 pub mod engine;
 
 pub mod scheduler;
