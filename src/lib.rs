@@ -1337,6 +1337,9 @@ impl EGraph {
                 let sort = expr.output_type();
 
                 let x = self.eval_resolved_expr(span.clone(), &expr)?;
+                if std::env::var("EGGLOG_PARANOID_EXTRACT").as_deref() == Ok("1") {
+                    eprintln!("PARANOID: extract root evaluated to {x:?}");
+                }
                 let n = self.eval_resolved_expr(span, &variants)?;
                 let n: i64 = self.backend.base_values().unwrap(n);
 
