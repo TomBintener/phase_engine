@@ -102,6 +102,37 @@ macro_rules! define_soundness_tests_logic {
             );
         }
 
+        /// Regression for the GF(2) parity bug in `BooleanPoly::from_terms`:
+        /// eliminating `v` pins `u := e1 XOR e2`; substituting that into the
+        /// out_state monomial `u*e1*e2` distributes to `[e1*e2, e1*e2]`, which
+        /// must cancel to zero under XOR semantics. The old `dedup()` kept one
+        /// copy of the duplicated monomial, corrupting the denoted basis map.
+        #[test]
+        fn test_pivot_substitution_gf2_parity_cancellation() {
+            let x0 = 1 as $primitive << 0;
+            let v  = 1 as $primitive << 1;
+            let u  = 1 as $primitive << 2;
+            let e1 = 1 as $primitive << 3;
+            let e2 = 1 as $primitive << 4;
+
+            let mut state = EvaluatedPathSum::new_id(1);
+            state.num_path_vars = 4;
+            state.out_state[0] = BooleanPoly::from_terms(smallvec::smallvec![x0, u | e1 | e2]);
+            state.phase_poly.merge_unsorted_batch(vec![
+                PackedPhaseTerm::create(v | u, 4),
+                PackedPhaseTerm::create(v | e1, 4),
+                PackedPhaseTerm::create(v | e2, 4),
+            ]);
+
+            let before = pathsum_to_matrix(&state);
+            state.reduce();
+            let after = pathsum_to_matrix(&state);
+            assert!(
+                matrices_match_up_to_global_phase(&before, &after, TOL),
+                "duplicated monomials produced by pivot substitution must cancel (GF(2) parity)"
+            );
+        }
+
         /// Regression for the stale liveness-mask unsoundness: eliminating `v`
         /// pins `u := w`, which makes `w` live inside a continuous phase parity.
         /// The old code kept judging liveness against the mask snapshot taken at

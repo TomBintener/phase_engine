@@ -126,7 +126,27 @@ macro_rules! define_canonical_phase_poly_logic {
         impl BooleanPoly {
             pub fn from_terms(mut terms: SmallVec<[$primitive; $poly_capacity]>) -> Self {
                 terms.sort_unstable();
-                terms.dedup();
+                // GF(2) parity compaction: duplicate monomials cancel in pairs
+                // (XOR semantics), so even-length runs vanish entirely and
+                // odd-length runs keep exactly one copy. A plain dedup() would
+                // keep one copy of *every* run, which is unsound.
+                let len = terms.len();
+                let mut write_idx = 0;
+                let mut read_idx = 0;
+                while read_idx < len {
+                    let current = terms[read_idx];
+                    let mut count = 1usize;
+                    read_idx += 1;
+                    while read_idx < len && terms[read_idx] == current {
+                        count += 1;
+                        read_idx += 1;
+                    }
+                    if count % 2 != 0 {
+                        terms[write_idx] = current;
+                        write_idx += 1;
+                    }
+                }
+                terms.truncate(write_idx);
                 let variable_mask = terms.iter().fold(0, |acc, &x| acc | x);
                 Self { terms, variable_mask }
             }
