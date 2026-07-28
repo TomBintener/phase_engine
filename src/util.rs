@@ -15,6 +15,13 @@ pub use egglog_ast::generic_ast_helpers::INTERNAL_SYMBOL_PREFIX;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SymbolGen {
     hint_to_count: HashMap<String, usize>,
+    /// All names handed out so far. Because generated names are formed by
+    /// concatenating `hint` and a counter, two different hints can produce the
+    /// same string (e.g. hint `f2` with the counter left off vs. hint `f` with
+    /// counter 2). Tracking every generated name lets `fresh` detect and skip
+    /// such collisions, which would otherwise silently alias two distinct
+    /// variables (see `fresh_symbols_no_collision_*` tests).
+    generated: HashSet<String>,
     reserved_string: String,
     leave_off_zero: bool,
 }
@@ -24,8 +31,37 @@ impl SymbolGen {
     pub fn new(reserved_string: String) -> Self {
         Self {
             hint_to_count: HashMap::default(),
+            generated: HashSet::default(),
             reserved_string,
             leave_off_zero: true,
+        }
+    }
+
+    /// Produce a fresh, never-before-generated name for `hint`.
+    ///
+    /// Names are `{reserved}{hint}{count}` (with the count left off for the
+    /// first use of a hint when `leave_off_zero` is set). Since the count is
+    /// appended directly to the hint, hints ending in digits can produce the
+    /// same string for different (hint, count) pairs; the `generated` set
+    /// catches those cases and the counter is bumped until the name is unique.
+    fn fresh_name(&mut self, hint: &str) -> String {
+        let entry = self.hint_to_count.entry(hint.to_string()).or_insert(0);
+        loop {
+            let count = *entry;
+            *entry += 1;
+            let name = format!(
+                "{}{}{}",
+                self.reserved_string,
+                hint,
+                if self.leave_off_zero && count == 0 {
+                    String::new()
+                } else {
+                    count.to_string()
+                }
+            );
+            if self.generated.insert(name.clone()) {
+                return name;
+            }
         }
     }
 
@@ -59,19 +95,7 @@ pub trait FreshGen<Head: ?Sized, Leaf> {
 
 impl FreshGen<str, String> for SymbolGen {
     fn fresh(&mut self, name_hint: &str) -> String {
-        let entry = self.hint_to_count.entry(name_hint.to_string()).or_insert(0);
-        let count_before = *entry;
-        *entry += 1;
-        format!(
-            "{}{}{}",
-            self.reserved_string,
-            name_hint,
-            if self.leave_off_zero && count_before == 0 {
-                "".to_string()
-            } else {
-                count_before.to_string()
-            }
-        )
+        self.fresh_name(name_hint)
     }
 }
 
@@ -83,22 +107,7 @@ impl FreshGen<String, String> for SymbolGen {
 
 impl FreshGen<ResolvedCall, ResolvedVar> for SymbolGen {
     fn fresh(&mut self, name_hint: &ResolvedCall) -> ResolvedVar {
-        let entry = self
-            .hint_to_count
-            .entry(format!("{name_hint}"))
-            .or_insert(0);
-        let count = *entry;
-        *entry += 1;
-        let name = format!(
-            "{}{}{}",
-            self.reserved_string,
-            name_hint,
-            if self.leave_off_zero && count == 0 {
-                "".to_string()
-            } else {
-                count.to_string()
-            }
-        );
+        let name = self.fresh_name(&format!("{name_hint}"));
         let sort = match name_hint {
             ResolvedCall::Func(f) => f.output.clone(),
             ResolvedCall::Primitive(prim) => prim.output().clone(),

@@ -94,6 +94,36 @@ fn test_simple_extract1() {
 }
 
 #[test]
+fn fresh_symbols_no_collision_for_digit_suffixed_globals() {
+    let _ = env_logger::builder().is_test(true).try_init();
+
+    // Regression test: fresh symbols are `{reserved}{hint}{count}` with the
+    // count appended directly to the hint, and the per-hint counters persist
+    // across commands. Hints ending in digits can therefore collide: once
+    // global `g` has been flattened 12 times and global `g1` twice, a command
+    // referencing both generates `@g12` for the `g` lookup and `@g12` *again*
+    // for the `g1` lookup, silently aliasing the two globals inside that
+    // command. The extracted term then came back as (P (B) (B)) instead of
+    // (P (A) (B)).
+    let mut program = String::from(
+        "(datatype N (A) (B) (P N N))\n(let g (A))\n(let g1 (B))\n(extract g1)\n",
+    );
+    // Advance `g`'s counter to 12 (the let consumed 0, fillers consume 1-11).
+    for _ in 0..11 {
+        program.push_str("(extract g)\n");
+    }
+    // `g` freshens at count 12 -> @g12; `g1` freshens at count 2 -> @g12 too.
+    program.push_str("(extract (P g g1))\n");
+
+    let mut egraph = EGraph::default();
+    let outputs = egraph.parse_and_run_program(None, &program).unwrap();
+    let CommandOutput::ExtractBest(termdag, _, term) = outputs.last().unwrap() else {
+        panic!("expected extract output");
+    };
+    assert_eq!(termdag.to_string(*term), "(P (A) (B))");
+}
+
+#[test]
 fn primitive_error_in_extract_returns_error() {
     let _ = env_logger::builder().is_test(true).try_init();
 
