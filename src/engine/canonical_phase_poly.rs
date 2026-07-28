@@ -54,13 +54,46 @@ macro_rules! define_canonical_phase_poly_logic {
 
         impl CanonicalPhasePoly {
             pub fn add_assign(&mut self, other: &Self) {
-                // 1. Bulk copy directly via slice (guarantees ptr::copy_nonoverlapping)
+                if other.terms.is_empty() { return; }
+                let old_len = self.terms.len();
+
+                // 1. Bulk copy directly via slice (guarantees ptr::copy_nonoverlapping).
+                // If the two sorted runs are already in order this is final;
+                // otherwise the buffer is rewritten by the back-to-front merge.
                 self.terms.extend_from_slice(&other.terms);
 
-                // 2. Sort (Apply the rotate_left trick to Ord for PackedPhaseTerm for max speed)
-                self.terms.sort_unstable();
+                // 2. Linear back-to-front merge of the two sorted runs, O(T+B)
+                // instead of the previous O((T+B) log(T+B)) re-sort. Run B is
+                // read from `other` (separate memory), so writes can never
+                // clobber unread elements: while B is non-empty the write
+                // index stays strictly above the unread tail of run A.
+                if old_len > 0 && self.terms[old_len - 1] > other.terms[0] {
+                    let mut w = self.terms.len();
+                    let mut a = old_len;
+                    let mut b = other.terms.len();
+                    while a > 0 && b > 0 {
+                        w -= 1;
+                        if self.terms[a - 1] > other.terms[b - 1] {
+                            self.terms[w] = self.terms[a - 1];
+                            a -= 1;
+                        } else {
+                            self.terms[w] = other.terms[b - 1];
+                            b -= 1;
+                        }
+                    }
+                    while b > 0 {
+                        w -= 1;
+                        b -= 1;
+                        self.terms[w] = other.terms[b];
+                    }
+                    // Remaining elements of run A are already in place.
+                }
 
-                // 3. In-place merge and modulo 8 phase cancellation
+                // 3. In-place compaction and modulo 8 phase cancellation across
+                // every equal-monomial run. This must count across whole runs:
+                // `other` is sorted but may contain equal adjacent monomials
+                // (e.g. `ContinuousPhasePoly::substitute` produces them), so
+                // duplicates are not necessarily cross-run only.
                 if self.terms.is_empty() { return; }
 
                 let mut write_idx = 0;
@@ -112,6 +145,8 @@ macro_rules! define_canonical_phase_poly_logic {
                         compacted.push(PackedPhaseTerm::create(current_mono, current_phase));
                     }
                 }
+                // Single sort: the batch is sorted+compacted once above, and
+                // `add_assign` now merges linearly instead of re-sorting.
                 let batch_poly = CanonicalPhasePoly { terms: compacted };
                 self.add_assign(&batch_poly);
             }
@@ -152,13 +187,41 @@ macro_rules! define_canonical_phase_poly_logic {
             }
 
             pub fn add_assign(&mut self, other: &Self) {
-                // 1. Bulk copy
+                if other.terms.is_empty() { return; }
+                let old_len = self.terms.len();
+
+                // 1. Bulk copy; final if the runs are already in order,
+                // otherwise rewritten by the back-to-front merge below.
                 self.terms.extend_from_slice(&other.terms);
 
-                // 2. Sort (this will natively use ipnsort since the elements are raw primitives)
-                self.terms.sort_unstable();
+                // 2. Linear back-to-front merge of the two sorted runs
+                // (run B is read from `other`'s separate memory, so writes
+                // never clobber unread elements).
+                if old_len > 0 && self.terms[old_len - 1] > other.terms[0] {
+                    let mut w = self.terms.len();
+                    let mut a = old_len;
+                    let mut b = other.terms.len();
+                    while a > 0 && b > 0 {
+                        w -= 1;
+                        if self.terms[a - 1] > other.terms[b - 1] {
+                            self.terms[w] = self.terms[a - 1];
+                            a -= 1;
+                        } else {
+                            self.terms[w] = other.terms[b - 1];
+                            b -= 1;
+                        }
+                    }
+                    while b > 0 {
+                        w -= 1;
+                        b -= 1;
+                        self.terms[w] = other.terms[b];
+                    }
+                }
 
-                // 3. In-place XOR cancellation
+                // 3. In-place XOR cancellation across every equal-monomial run.
+                // Parity must be counted across whole runs: `other` can carry
+                // within-run duplicates (ContinuousPhasePoly::substitute ORs a
+                // single-bit e-term into monomials, which can collide them).
                 if self.terms.is_empty() { return; }
 
                 let mut write_idx = 0;

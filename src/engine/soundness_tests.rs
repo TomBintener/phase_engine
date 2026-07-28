@@ -242,6 +242,166 @@ macro_rules! define_soundness_tests_logic {
             }
         }
 
+        /// Differential test for the linear-merge `add_assign` rewrites: the
+        /// merge-based implementation must produce exactly the same canonical
+        /// term vectors as a naive extend+sort+compact oracle, on random
+        /// polynomial pairs — including `other` inputs that carry within-run
+        /// duplicates (as `ContinuousPhasePoly::substitute` produces).
+        #[test]
+        fn test_add_assign_matches_naive_oracle() {
+            let mut rng = XorShift::new(0xA55E_55ED_0DDB_A11 | 1);
+
+            // --- BooleanPoly ---
+            for case in 0..500u32 {
+                // Canonical `self`: via from_terms (sorted, parity-compacted).
+                // The SmallVec capacity parameter differs per engine, so the
+                // concrete type is inferred from the BooleanPoly signatures.
+                let self_len = rng.below(12) as usize;
+                let mut self_terms = smallvec::SmallVec::new();
+                for _ in 0..self_len {
+                    self_terms.push(rng.below(64) as $primitive);
+                }
+                let base = BooleanPoly::from_terms(self_terms);
+
+                // `other`: sorted but NOT compacted — may contain duplicates.
+                let other_len = rng.below(12) as usize;
+                let mut other = BooleanPoly::from_terms(smallvec::smallvec![]);
+                for _ in 0..other_len {
+                    // Small domain to force frequent duplicates.
+                    other.terms.push(rng.below(8) as $primitive);
+                }
+                other.terms.sort_unstable();
+                other.variable_mask = other.terms.iter().fold(0, |acc, &x| acc | x);
+                let other_terms: Vec<$primitive> = other.terms.to_vec();
+
+                // Oracle: naive extend + sort + whole-run parity compaction.
+                let mut oracle: Vec<$primitive> = base.terms.to_vec();
+                oracle.extend_from_slice(&other_terms);
+                oracle.sort_unstable();
+                let mut compacted: Vec<$primitive> = Vec::new();
+                let mut i = 0;
+                while i < oracle.len() {
+                    let mut j = i + 1;
+                    while j < oracle.len() && oracle[j] == oracle[i] { j += 1; }
+                    if (j - i) % 2 != 0 { compacted.push(oracle[i]); }
+                    i = j;
+                }
+
+                let mut merged = base.clone();
+                merged.add_assign(&other);
+                assert_eq!(
+                    merged.terms.as_slice(),
+                    compacted.as_slice(),
+                    "case {case}: BooleanPoly::add_assign diverged from the naive oracle"
+                );
+                let expect_mask = compacted.iter().fold(0, |acc, &x| acc | x);
+                assert_eq!(merged.variable_mask, expect_mask, "case {case}: variable_mask mismatch");
+            }
+
+            // --- CanonicalPhasePoly ---
+            for case in 0..500u32 {
+                let mk_canonical = |rng: &mut XorShift, len_max: u64, dom: u64| {
+                    let len = rng.below(len_max) as usize;
+                    let mut batch = Vec::with_capacity(len);
+                    for _ in 0..len {
+                        batch.push(PackedPhaseTerm::create(
+                            rng.below(dom) as $primitive,
+                            (rng.below(8)) as u8,
+                        ));
+                    }
+                    let mut poly = CanonicalPhasePoly { terms: smallvec::smallvec![] };
+                    poly.merge_unsorted_batch(batch);
+                    poly
+                };
+                let base = mk_canonical(&mut rng, 14, 64);
+                let other = mk_canonical(&mut rng, 14, 16);
+
+                // Oracle: naive extend + sort + whole-run mod-8 compaction,
+                // dropping zero phases and global-phase (monomial 0) terms.
+                let mut oracle: Vec<PackedPhaseTerm> = base.terms.to_vec();
+                oracle.extend_from_slice(&other.terms);
+                oracle.sort_unstable();
+                let mut compacted: Vec<PackedPhaseTerm> = Vec::new();
+                let mut i = 0;
+                while i < oracle.len() {
+                    let mono = oracle[i].monomial();
+                    let mut phase = oracle[i].phase();
+                    let mut j = i + 1;
+                    while j < oracle.len() && oracle[j].monomial() == mono {
+                        phase = (phase + oracle[j].phase()) % 8;
+                        j += 1;
+                    }
+                    if phase != 0 && mono != 0 {
+                        compacted.push(PackedPhaseTerm::create(mono, phase));
+                    }
+                    i = j;
+                }
+
+                let mut merged = base.clone();
+                merged.add_assign(&other);
+                assert_eq!(
+                    merged.terms.as_slice(),
+                    compacted.as_slice(),
+                    "case {case}: CanonicalPhasePoly::add_assign diverged from the naive oracle"
+                );
+            }
+        }
+
+        /// The val_mask canonicalization: comp_mask-clearing mutators must
+        /// scrub the corresponding val bit, so no state ever carries val bits
+        /// outside comp_mask (they are semantically dead but participate in
+        /// Eq/Hash and previously caused e-graph misses).
+        #[test]
+        fn test_val_mask_never_escapes_comp_mask() {
+            // X;H on a fresh qubit.
+            let mut s = EvaluatedPathSum::new_zero_state(2);
+            s.apply_x(0);
+            s.apply_h(0);
+            assert_eq!(s.val_mask & !s.comp_mask, 0, "X;H leaked a dead val bit");
+
+            // X;SX on a fresh qubit.
+            let mut s = EvaluatedPathSum::new_zero_state(2);
+            s.apply_x(0);
+            s.apply_sx(0);
+            assert_eq!(s.val_mask & !s.comp_mask, 0, "X;SX leaked a dead val bit");
+
+            // Superposed-control CX onto a |1> target.
+            let mut s = EvaluatedPathSum::new_zero_state(2);
+            s.apply_x(1);
+            s.apply_h(0);
+            s.apply_cx(0, 1);
+            assert_eq!(s.val_mask & !s.comp_mask, 0, "superposed CX leaked a dead val bit");
+
+            // The FFI accepts arbitrary masks: new_basis_state must scrub.
+            let s = EvaluatedPathSum::new_basis_state(2, 0b01, 0b11);
+            assert_eq!(s.val_mask & !s.comp_mask, 0, "new_basis_state kept out-of-comp val bits");
+
+            // Two orders of producing the same state must now compare equal.
+            // (a) X;H vs H;Z on |0>: both denote H|1> = |->.
+            let mut a = EvaluatedPathSum::new_zero_state(2);
+            a.apply_x(0);
+            a.apply_h(0);
+            a.reduce();
+            let mut b = EvaluatedPathSum::new_zero_state(2);
+            b.apply_h(0);
+            b.apply_z(0);
+            b.reduce();
+            assert_eq!(a, b, "X;H and H;Z canonical states must be Eq-equal");
+
+            // (b) X-then-CX vs CX-then-X on the target (superposed control).
+            let mut a = EvaluatedPathSum::new_zero_state(2);
+            a.apply_h(0);
+            a.apply_x(1);
+            a.apply_cx(0, 1);
+            a.reduce();
+            let mut b = EvaluatedPathSum::new_zero_state(2);
+            b.apply_h(0);
+            b.apply_cx(0, 1);
+            b.apply_x(1);
+            b.reduce();
+            assert_eq!(a, b, "X;CX and CX;X canonical states must be Eq-equal");
+        }
+
         /// Sanity: identical circuits must produce Eq-equal canonical states.
         #[test]
         fn test_identical_circuits_compare_equal() {

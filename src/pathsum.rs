@@ -62,7 +62,9 @@ where
     if q < 0 || q as usize >= state.num_qubits as usize {
         return state;
     }
-    let mut new_state = (*state).clone();
+    // The argument is already a fresh deep clone from `get_cloned`; move it
+    // out instead of cloning a second time.
+    let mut new_state = state.into_inner();
     op(&mut new_state, q as usize);
     new_state.reduce();
     PSum64::new(new_state)
@@ -75,7 +77,7 @@ where
     if q < 0 || q as usize >= state.num_qubits as usize {
         return state;
     }
-    let mut new_state = (*state).clone();
+    let mut new_state = state.into_inner();
     op(&mut new_state, q as usize);
     PSum64::new(new_state)
 }
@@ -86,7 +88,7 @@ pub fn apply_cx_logic_64(state: PSum64, qc: i64, qt: i64) -> PSum64 {
        qt as usize >= state.num_qubits as usize {
         return state;
     }
-    let mut new_state = (*state).clone();
+    let mut new_state = state.into_inner();
     new_state.apply_cx(qc as usize, qt as usize);
     PSum64::new(new_state)
 }
@@ -95,7 +97,7 @@ pub fn apply_rz_logic_64(state: PSum64, q: i64, theta_bits: i64) -> PSum64 {
     if q < 0 || q as usize >= state.num_qubits as usize {
         return state;
     }
-    let mut new_state = (*state).clone();
+    let mut new_state = state.into_inner();
     new_state.apply_rz(q as usize, f64::from_bits(theta_bits as u64));
     new_state.reduce();
     PSum64::new(new_state)
@@ -154,7 +156,9 @@ where
     if q < 0 || q as usize >= state.num_qubits as usize {
         return state;
     }
-    let mut new_state = (*state).clone();
+    // The argument is already a fresh deep clone from `get_cloned`; move it
+    // out instead of cloning a second time.
+    let mut new_state = state.into_inner();
     op(&mut new_state, q as usize);
     new_state.reduce();
     PSum128::new(new_state)
@@ -167,7 +171,7 @@ where
     if q < 0 || q as usize >= state.num_qubits as usize {
         return state;
     }
-    let mut new_state = (*state).clone();
+    let mut new_state = state.into_inner();
     op(&mut new_state, q as usize);
     PSum128::new(new_state)
 }
@@ -178,7 +182,7 @@ pub fn apply_cx_logic_128(state: PSum128, qc: i64, qt: i64) -> PSum128 {
        qt as usize >= state.num_qubits as usize {
         return state;
     }
-    let mut new_state = (*state).clone();
+    let mut new_state = state.into_inner();
     new_state.apply_cx(qc as usize, qt as usize);
     PSum128::new(new_state)
 }
@@ -187,7 +191,7 @@ pub fn apply_rz_logic_128(state: PSum128, q: i64, theta_bits: i64) -> PSum128 {
     if q < 0 || q as usize >= state.num_qubits as usize {
         return state;
     }
-    let mut new_state = (*state).clone();
+    let mut new_state = state.into_inner();
     new_state.apply_rz(q as usize, f64::from_bits(theta_bits as u64));
     new_state.reduce();
     PSum128::new(new_state)

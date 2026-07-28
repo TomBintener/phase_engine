@@ -51,7 +51,11 @@ macro_rules! define_evaluator_logic {
                     num_qubits,
                     num_path_vars: 0,
                     comp_mask,
-                    val_mask,
+                    // Canonical-form invariant: val_mask bits outside comp_mask
+                    // are semantically dead but participate in Eq/Hash, so they
+                    // are scrubbed here and at every comp_mask-clearing mutator.
+                    // (The FFI accepts arbitrary masks from Python.)
+                    val_mask: val_mask & comp_mask,
                     out_state,
                     phase_poly: CanonicalPhasePoly { terms: smallvec::smallvec![] },
                     continuous_poly: ContinuousPhasePoly::new(),
@@ -89,6 +93,8 @@ macro_rules! define_evaluator_logic {
                 } else {
                     // Control is in superposition: Target becomes entangled, leaves computational basis!
                     self.comp_mask &= !t_bit;
+                    // Scrub the now-dead val bit so it cannot leak into Eq/Hash.
+                    self.val_mask &= !t_bit;
                 }
 
                 let (ctrl_poly, tgt_poly) = if qc < qt {
@@ -202,6 +208,8 @@ macro_rules! define_evaluator_logic {
 
             pub fn apply_sx(&mut self, q: usize) {
                 self.comp_mask &= !(1 as $primitive << q);
+                // Scrub the now-dead val bit so it cannot leak into Eq/Hash.
+                self.val_mask &= !(1 as $primitive << q);
                 let var_index = self.num_qubits + self.num_path_vars;
                 assert!(var_index < (<$primitive>::BITS - 3), "Exceeded variable limit");
                 let v_mask = 1 as $primitive << var_index;
@@ -219,6 +227,8 @@ macro_rules! define_evaluator_logic {
 
             pub fn apply_h(&mut self, q: usize) {
                 self.comp_mask &= !(1 as $primitive << q);
+                // Scrub the now-dead val bit so it cannot leak into Eq/Hash.
+                self.val_mask &= !(1 as $primitive << q);
                 let var_index = self.num_qubits + self.num_path_vars;
                 assert!(var_index < (<$primitive>::BITS - 3), "Exceeded variable limit");
                 let v_mask = 1 as $primitive << var_index;

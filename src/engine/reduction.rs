@@ -174,7 +174,7 @@ macro_rules! define_reduction_logic {
                                 changed = true;
                                 let e_poly = BooleanPoly::from_mask(p_mask);
 
-                                let mut next_gen_terms = Vec::new();
+                                let mut next_gen_terms = Vec::with_capacity(self.phase_poly.terms.len());
                                 for term in self.phase_poly.terms.iter() {
                                     if (term.monomial() & v_mask) == 0 {
                                         next_gen_terms.push(*term);
@@ -236,7 +236,7 @@ macro_rules! define_reduction_logic {
                                 global_out_mask |= parity.variable_mask;
                             }
 
-                            let mut next_gen_terms = Vec::new();
+                            let mut next_gen_terms = Vec::with_capacity(self.phase_poly.terms.len());
                             for term in self.phase_poly.terms.iter() {
                                 let mono = term.monomial();
                                 if (mono & v_mask) != 0 { continue; }
@@ -313,6 +313,14 @@ macro_rules! define_reduction_logic {
                         }
                     }
                 }
+
+                // Canonical-form invariant, established by construction at the
+                // comp_mask-clearing mutators (apply_cx/apply_sx/apply_h) and
+                // new_basis_state: no val bit may survive outside comp_mask.
+                debug_assert!(
+                    self.val_mask & !self.comp_mask == 0,
+                    "val_mask has bits outside comp_mask; a comp-clearing mutator failed to scrub"
+                );
             }
         }
     }
