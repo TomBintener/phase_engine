@@ -24,6 +24,7 @@ include!("reference.rs");
 include!("soundness_tests.rs");
 include!("pmh.rs");
 include!("steiner.rs");
+include!("gray.rs");
 
 macro_rules! generate_phase_engine {
     (
@@ -44,6 +45,7 @@ macro_rules! generate_phase_engine {
             define_reduction_logic!($primitive, $poly_capacity);
             define_pmh_logic!($primitive);
             define_steiner_logic!($primitive);
+            define_gray_logic!($primitive);
 
             #[cfg(test)]
             pub mod tests {

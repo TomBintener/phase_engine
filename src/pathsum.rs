@@ -440,6 +440,83 @@ pub fn synthesize_pmh_logic_64(state: PSum64, gate_count: i64) -> String {
     "None".to_string()
 }
 
+/// GraySynth-style CX+RZ resynthesis on all-to-all connectivity (64-bit).
+///
+/// Unlike `synthesize_pmh` this accepts states *with* phase terms (the whole
+/// point: RZ-bearing Hadamard-free blocks), and unlike `synthesize_steiner`
+/// it needs no topology and shares parity prefixes across terms instead of
+/// building and unbuilding one CNOT tree per term. Discrete phase monomials
+/// are lifted to the parity basis by Mobius inversion first (the canonical
+/// poly is monomial-based; treating masks as parities would be wrong for any
+/// multi-bit mask).
+///
+/// Sound by construction downstream: proposals only merge via `state_union`
+/// when the engine proves state equality.
+pub fn synthesize_gray_logic_64(
+    state: PSum64,
+    gate_count: i64,
+    hw_cost: i64,
+    cnot_weight: i64,
+    rz_weight: i64,
+) -> String {
+    if gate_count <= 2 {
+        return "None".to_string();
+    }
+    let n = state.num_qubits as usize;
+    let valid_mask: u64 = if n >= 64 { u64::MAX } else { (1u64 << n) - 1 };
+
+    // Purity: linear, affine-free out_state over input variables only.
+    for poly in &state.out_state {
+        if (poly.variable_mask & !valid_mask) != 0 {
+            return "None".to_string();
+        }
+        if poly.terms.iter().any(|&t| t == 0 || t.count_ones() != 1) {
+            return "None".to_string();
+        }
+    }
+
+    let mut parities: Vec<(u64, f64)> = Vec::new();
+    for (i, p) in state.continuous_poly.parities.iter().enumerate() {
+        if (p.variable_mask & !valid_mask) != 0 {
+            return "None".to_string();
+        }
+        if p.terms.iter().any(|&t| t == 0 || t.count_ones() != 1) {
+            return "None".to_string();
+        }
+        parities.push((p.variable_mask, state.continuous_poly.phases[i]));
+    }
+
+    let mut monomials: Vec<(u64, f64)> = Vec::new();
+    for term in &state.phase_poly.terms {
+        let phase_unit = term.0 >> 61;
+        let mask = term.0 & 0x1FFF_FFFF_FFFF_FFFF;
+        if (mask & !valid_mask) != 0 {
+            return "None".to_string();
+        }
+        monomials.push((mask, (phase_unit as f64) * std::f64::consts::PI / 4.0));
+    }
+    match crate::engine::engine_64::phase_monomials_to_parities(&monomials) {
+        Some(disc) => parities.extend(disc),
+        None => return "None".to_string(),
+    }
+
+    let target: Vec<u64> = (0..n).map(|i| state.out_state[i].variable_mask).collect();
+    match crate::engine::engine_64::synthesize_gray_network(&parities, &target, n) {
+        Some((instructions, total_cnots)) => {
+            let rz_count = instructions.len() as i64 - total_cnots;
+            let synth_cost = rz_count * rz_weight + total_cnots * cnot_weight;
+            if synth_cost >= hw_cost {
+                return "None".to_string();
+            }
+            if instructions.is_empty() {
+                return "empty".to_string();
+            }
+            instructions.join(";")
+        }
+        None => "None".to_string(),
+    }
+}
+
 pub fn synthesize_steiner_logic_128(state: PSum128, gate_count: i64, hw_cost: i64, topology_str: String, cnot_weight: i64, rz_weight: i64) -> String {
     if gate_count <= 2 {
         return "None".to_string();
@@ -561,6 +638,72 @@ pub fn synthesize_steiner_logic_128(state: PSum128, gate_count: i64, hw_cost: i6
 }
 
 
+/// GraySynth-style CX+RZ resynthesis on all-to-all connectivity (128-bit).
+/// See `synthesize_gray_logic_64` for the rationale and guards.
+pub fn synthesize_gray_logic_128(
+    state: PSum128,
+    gate_count: i64,
+    hw_cost: i64,
+    cnot_weight: i64,
+    rz_weight: i64,
+) -> String {
+    if gate_count <= 2 {
+        return "None".to_string();
+    }
+    let n = state.num_qubits as usize;
+    let valid_mask: u128 = if n >= 128 { u128::MAX } else { (1u128 << n) - 1 };
+
+    for poly in &state.out_state {
+        if (poly.variable_mask & !valid_mask) != 0 {
+            return "None".to_string();
+        }
+        if poly.terms.iter().any(|&t| t == 0 || t.count_ones() != 1) {
+            return "None".to_string();
+        }
+    }
+
+    let mut parities: Vec<(u128, f64)> = Vec::new();
+    for (i, p) in state.continuous_poly.parities.iter().enumerate() {
+        if (p.variable_mask & !valid_mask) != 0 {
+            return "None".to_string();
+        }
+        if p.terms.iter().any(|&t| t == 0 || t.count_ones() != 1) {
+            return "None".to_string();
+        }
+        parities.push((p.variable_mask, state.continuous_poly.phases[i]));
+    }
+
+    let mut monomials: Vec<(u128, f64)> = Vec::new();
+    for term in &state.phase_poly.terms {
+        let phase_unit = term.0 >> 125;
+        let mask = term.0 & 0x1FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF;
+        if (mask & !valid_mask) != 0 {
+            return "None".to_string();
+        }
+        monomials.push((mask, (phase_unit as f64) * std::f64::consts::PI / 4.0));
+    }
+    match crate::engine::engine_128::phase_monomials_to_parities(&monomials) {
+        Some(disc) => parities.extend(disc),
+        None => return "None".to_string(),
+    }
+
+    let target: Vec<u128> = (0..n).map(|i| state.out_state[i].variable_mask).collect();
+    match crate::engine::engine_128::synthesize_gray_network(&parities, &target, n) {
+        Some((instructions, total_cnots)) => {
+            let rz_count = instructions.len() as i64 - total_cnots;
+            let synth_cost = rz_count * rz_weight + total_cnots * cnot_weight;
+            if synth_cost >= hw_cost {
+                return "None".to_string();
+            }
+            if instructions.is_empty() {
+                return "empty".to_string();
+            }
+            instructions.join(";")
+        }
+        None => "None".to_string(),
+    }
+}
+
 pub fn synthesize_pmh_logic_128(state: PSum128, gate_count: i64) -> String {
     if gate_count <= 2 {
         return "None".to_string();
@@ -649,6 +792,8 @@ impl BaseSort for PathSumSort64 {
         add_primitive!(eg, "rust_apply_rz_64" = |s: PSum64, q: i64, t: i64| -> PSum64 { apply_rz_logic_64(s, q, t) });
         add_primitive!(eg, "rust_synthesize_pmh_64" = |s: PSum64, count: i64| -> S { S::new(synthesize_pmh_logic_64(s, count)) });
         add_primitive!(eg, "rust_synthesize_steiner_64" = |s: PSum64, count: i64, hw_cost: i64, top: S, cnot_wt: i64, rz_wt: i64| -> S { S::new(synthesize_steiner_logic_64(s, count, hw_cost, top.to_string(), cnot_wt, rz_wt)) });
+        add_primitive!(eg, "rust_synthesize_gray_64" = |s: PSum64, count: i64, hw_cost: i64, cnot_wt: i64, rz_wt: i64| -> S { S::new(synthesize_gray_logic_64(s, count, hw_cost, cnot_wt, rz_wt)) });
+        add_primitive!(eg, "rust_state_fingerprint_64" = |s: PSum64| -> S { S::new(state_fingerprint_logic_64(s)) });
         add_primitive!(eg, "rust_debug_pathsum_64" = |s: PSum64| -> S { S::new(debug_pathsum_logic_64(s)) });
         add_primitive!(eg, "rust_add_rz_bits_64" = |a: i64, b: i64| -> i64 { rust_add_rz_bits_logic(a, b) });
         add_primitive!(eg, "rust_negate_rz_bits_64" = |a: i64| -> i64 { rust_negate_rz_bits_logic(a) });
@@ -681,6 +826,8 @@ impl BaseSort for PathSumSort128 {
         add_primitive!(eg, "rust_apply_rz_128" = |s: PSum128, q: i64, t: i64| -> PSum128 { apply_rz_logic_128(s, q, t) });
         add_primitive!(eg, "rust_synthesize_pmh_128" = |s: PSum128, count: i64| -> S { S::new(synthesize_pmh_logic_128(s, count)) });
         add_primitive!(eg, "rust_synthesize_steiner_128" = |s: PSum128, count: i64, hw_cost: i64, top: S, cnot_wt: i64, rz_wt: i64| -> S { S::new(synthesize_steiner_logic_128(s, count, hw_cost, top.to_string(), cnot_wt, rz_wt)) });
+        add_primitive!(eg, "rust_synthesize_gray_128" = |s: PSum128, count: i64, hw_cost: i64, cnot_wt: i64, rz_wt: i64| -> S { S::new(synthesize_gray_logic_128(s, count, hw_cost, cnot_wt, rz_wt)) });
+        add_primitive!(eg, "rust_state_fingerprint_128" = |s: PSum128| -> S { S::new(state_fingerprint_logic_128(s)) });
         add_primitive!(eg, "rust_debug_pathsum_128" = |s: PSum128| -> S { S::new(debug_pathsum_logic_128(s)) });
         add_primitive!(eg, "rust_add_rz_bits_128" = |a: i64, b: i64| -> i64 { rust_add_rz_bits_logic(a, b) });
         add_primitive!(eg, "rust_negate_rz_bits_128" = |a: i64| -> i64 { rust_negate_rz_bits_logic(a) });
@@ -689,6 +836,21 @@ impl BaseSort for PathSumSort128 {
         let arg = td.lit(Literal::Int(0));
         td.app("rust_id_pathsum_128".to_string(), vec![arg])
     }
+}
+
+/// Complete canonical state fingerprint (64-bit): the derive(Debug) dump of
+/// every `EvaluatedPathSum` field, i.e. exactly the fields `PartialEq`
+/// compares. Two states are engine-equal iff their fingerprints match, which
+/// gives host-side passes the same trust base as `state_union`
+/// (`debug_pathsum` is NOT sufficient: it omits `out_state` and the masks).
+pub fn state_fingerprint_logic_64(state: PSum64) -> String {
+    // Arc's Debug delegates to the inner EvaluatedPathSum.
+    format!("{:?}", state.into_inner())
+}
+
+/// Complete canonical state fingerprint (128-bit); see the 64-bit variant.
+pub fn state_fingerprint_logic_128(state: PSum128) -> String {
+    format!("{:?}", state.into_inner())
 }
 
 pub fn debug_pathsum_logic_64(state: PSum64) -> String {
@@ -715,4 +877,144 @@ pub fn debug_pathsum_logic_128(state: PSum128) -> String {
         out.push_str(&format!("(mask={}, phase_unit={}) ", mask, phase_unit));
     }
     out
+}
+
+#[cfg(test)]
+mod gray_tests {
+    use super::*;
+
+    fn bits(theta: f64) -> i64 {
+        // Snap like the Python DSL does so angles are grid-aligned.
+        let snapped = (theta * 100_000_000.0).round() / 100_000_000.0;
+        snapped.to_bits() as i64
+    }
+
+    /// Applies a synthesized ";"-joined instruction string ("cx c,t" /
+    /// "rz q,bits") to a fresh identity state through the real engine.
+    fn replay(instructions: &str, n: i64) -> PSum64 {
+        let mut ps = id_pathsum_logic_64(n);
+        for instr in instructions.split(';') {
+            let instr = instr.trim();
+            if instr.is_empty() {
+                continue;
+            }
+            let (gate, args) = instr.split_once(' ').expect("gate args");
+            let parts: Vec<i64> = args
+                .split(',')
+                .map(|v| v.trim().parse::<i64>().unwrap())
+                .collect();
+            ps = match gate {
+                "cx" => apply_cx_logic_64(ps, parts[0], parts[1]),
+                "rz" => apply_rz_logic_64(ps, parts[0], parts[1]),
+                other => panic!("unexpected gate from gray synthesis: {other}"),
+            };
+        }
+        ps
+    }
+
+    fn build(gates: &[(&str, i64, i64)], n: i64) -> PSum64 {
+        let mut ps = id_pathsum_logic_64(n);
+        for &(g, a, b) in gates {
+            ps = match g {
+                "cx" => apply_cx_logic_64(ps, a, b),
+                "rz" => apply_rz_logic_64(ps, a, b),
+                "t" => apply_gate_logic_64(ps, a, |st, q| st.apply_t(q)),
+                "s" => apply_gate_logic_64(ps, a, |st, q| st.apply_s(q)),
+                "z" => apply_gate_logic_64(ps, a, |st, q| st.apply_z(q)),
+                other => panic!("unexpected test gate {other}"),
+            };
+        }
+        ps
+    }
+
+    fn assert_gray_equal(gates: &[(&str, i64, i64)], n: i64) -> String {
+        let ps = build(gates, n);
+        let fp_orig = state_fingerprint_logic_64(ps.clone());
+        let out = synthesize_gray_logic_64(ps, 1_000, i64::MAX, 50, 1);
+        assert_ne!(out, "None", "gray refused a synthesizable state");
+        let replayed = if out == "empty" {
+            id_pathsum_logic_64(n)
+        } else {
+            replay(&out, n)
+        };
+        assert_eq!(
+            state_fingerprint_logic_64(replayed),
+            fp_orig,
+            "resynthesized circuit is not engine-equal (instructions: {out})"
+        );
+        out
+    }
+
+    #[test]
+    fn continuous_parity_ladder_round_trips() {
+        // Classic UCCSD-style CX ladder with a rotation at the bottom.
+        let g = [
+            ("cx", 0, 1),
+            ("cx", 1, 2),
+            ("cx", 2, 3),
+            ("rz", 3, bits(0.37)),
+            ("cx", 2, 3),
+            ("cx", 1, 2),
+            ("cx", 0, 1),
+        ];
+        let out = assert_gray_equal(&g, 4);
+        // Quality: the naive build/unbuild ladder uses 6 CX; sharing must do
+        // strictly better on a single parity (3 up + fixup back).
+        let cx_count = out.matches("cx").count();
+        assert!(cx_count <= 6, "no CX saving over per-term trees: {out}");
+    }
+
+    #[test]
+    fn discrete_monomials_convert_and_round_trip() {
+        // T on a parity wire stores multilinear monomials; Mobius inversion
+        // must recover a parity network the engine proves equal.
+        let g = [
+            ("cx", 0, 1),
+            ("t", 1, 0),
+            ("cx", 0, 1),
+            ("s", 0, 0),
+            ("z", 2, 0),
+        ];
+        assert_gray_equal(&g, 3);
+    }
+
+    #[test]
+    fn shared_prefixes_beat_per_term_trees() {
+        // Two rotations on overlapping parities plus a residual linear
+        // function (the trailing CX ladder is NOT undone).
+        let g = [
+            ("cx", 0, 1),
+            ("rz", 1, bits(0.25)),
+            ("cx", 2, 1),
+            ("rz", 1, bits(0.5)),
+            ("cx", 3, 1),
+            ("rz", 1, bits(1.25)),
+        ];
+        assert_gray_equal(&g, 4);
+    }
+
+    #[test]
+    fn pure_linear_block_round_trips() {
+        let g = [("cx", 0, 1), ("cx", 1, 2), ("cx", 2, 0)];
+        assert_gray_equal(&g, 3);
+    }
+
+    #[test]
+    fn rejects_states_with_path_variables() {
+        // A Hadamard introduces a path variable; gray must refuse.
+        let mut ps = id_pathsum_logic_64(2);
+        ps = apply_gate_logic_64(ps, 0, |st, q| st.apply_h(q));
+        ps = apply_cx_logic_64(ps, 0, 1);
+        let out = synthesize_gray_logic_64(ps, 1_000, i64::MAX, 50, 1);
+        assert_eq!(out, "None");
+    }
+
+    #[test]
+    fn cost_gate_rejects_expensive_synthesis() {
+        let g = [("cx", 0, 1), ("rz", 1, bits(0.37)), ("cx", 0, 1)];
+        let ps = build(&g, 2);
+        // hw_cost 0 means any synthesis is too expensive.
+        let out = synthesize_gray_logic_64(ps, 1_000, 0, 50, 1);
+        assert_eq!(out, "None");
+    }
 }
