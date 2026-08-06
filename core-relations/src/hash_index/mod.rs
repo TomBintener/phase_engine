@@ -350,6 +350,21 @@ impl IndexBase for ColumnIndex {
 
         radix_sort_pairs_by_value(&mut pairs);
         if cols.len() > 1 {
+            // The radix sort is stable and keyed on the value only. With multiple
+            // columns, rows for a given value arrive in column-concatenation order,
+            // so within a value group the row ids are generally *not* sorted, and a
+            // (value, row) pair can appear once per column without being adjacent.
+            // Restore the per-group row order before dedup; downstream code
+            // (new_vec/make_ref) requires strictly sorted, duplicate-free subsets.
+            let mut i = 0;
+            while i < pairs.len() {
+                let start = i;
+                let key = pairs[i].0;
+                while i < pairs.len() && pairs[i].0 == key {
+                    i += 1;
+                }
+                pairs[start..i].sort_unstable_by_key(|&(_, r)| r);
+            }
             // Remove duplicates (same value in multiple columns of the same row).
             pairs.dedup();
         }

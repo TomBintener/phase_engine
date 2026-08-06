@@ -535,9 +535,33 @@ impl Table for SortedWritesTable {
     }
 
     fn get_row(&self, key: &[Value]) -> Option<Row> {
+        fn paranoid_lookups() -> bool {
+            static FLAG: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+            *FLAG.get_or_init(|| {
+                std::env::var("EGGLOG_PARANOID_EXTRACT").as_deref() == Ok("1")
+            })
+        }
         let id = get_entry(key, self.n_keys, &self.hash, |row| {
             &self.data.get_row(row).unwrap()[0..self.n_keys] == key
-        })?;
+        });
+        if id.is_none() && paranoid_lookups() {
+            let mut row = RowId::new(0);
+            while row < self.data.next_row() {
+                if let Some(vals) = self.data.get_row(row)
+                    && &vals[0..self.n_keys] == key
+                {
+                    panic!(
+                        "PARANOID: get_row FALSE MISS: key {key:?} exists in \
+                         live row {row:?} = {vals:?} but hash lookup missed it \
+                         (n_keys={}, rows={:?})",
+                        self.n_keys,
+                        self.data.next_row()
+                    );
+                }
+                row = RowId::from_usize(row.index() + 1);
+            }
+        }
+        let id = id?;
         let mut vals = with_pool_set(|ps| ps.get::<Vec<Value>>());
         vals.extend_from_slice(self.data.get_row(id).unwrap());
         Some(Row { id, vals })

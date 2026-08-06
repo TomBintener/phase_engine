@@ -20,6 +20,8 @@ mod exec_state;
 pub mod extract;
 pub mod prelude;
 mod proofs;
+pub mod pathsum;
+pub mod engine;
 
 pub mod scheduler;
 mod serialize;
@@ -412,6 +414,8 @@ impl Default for EGraph {
         add_base_sort(&mut eg, F64Sort, span!()).unwrap();
         add_base_sort(&mut eg, BigIntSort, span!()).unwrap();
         add_base_sort(&mut eg, BigRatSort, span!()).unwrap();
+        add_base_sort(&mut eg, crate::pathsum::PathSumSort64, span!()).unwrap();
+        add_base_sort(&mut eg, crate::pathsum::PathSumSort128, span!()).unwrap();
         eg.type_info.add_presort::<MapSort>(span!()).unwrap();
         eg.type_info.add_presort::<SetSort>(span!()).unwrap();
         eg.type_info.add_presort::<VecSort>(span!()).unwrap();
@@ -1555,6 +1559,9 @@ impl EGraph {
                 let sort = expr.output_type();
 
                 let x = self.eval_resolved_expr(span.clone(), &expr)?;
+                if std::env::var("EGGLOG_PARANOID_EXTRACT").as_deref() == Ok("1") {
+                    eprintln!("PARANOID: extract root evaluated to {x:?}");
+                }
                 let n = self.eval_resolved_expr(span, &variants)?;
                 let n: i64 = self.backend.base_values().unwrap(n);
 

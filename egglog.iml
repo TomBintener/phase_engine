@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<module type="RUST_MODULE" version="4">
+  <component name="NewModuleRootManager" inherit-compiler-output="true">
+    <exclude-output />
+    <content url="file://$MODULE_DIR$">
+      <sourceFolder url="file://$MODULE_DIR$/benches" isTestSource="true" />
+      <sourceFolder url="file://$MODULE_DIR$/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/tests" isTestSource="true" />
+      <sourceFolder url="file://$MODULE_DIR$/concurrency/benches" isTestSource="true" />
+      <sourceFolder url="file://$MODULE_DIR$/concurrency/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/core-relations/benches" isTestSource="true" />
+      <sourceFolder url="file://$MODULE_DIR$/core-relations/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/egglog-ast/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/egglog-bridge/examples" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/egglog-bridge/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/egglog-reports/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/numeric-id/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/src/sort/add_primitive/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/union-find/benches" isTestSource="true" />
+      <sourceFolder url="file://$MODULE_DIR$/union-find/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/wasm-example/src" isTestSource="false" />
+      <excludeFolder url="file://$MODULE_DIR$/target" />
+    </content>
+    <orderEntry type="inheritedJdk" />
+    <orderEntry type="sourceFolder" forTests="false" />
+  </component>
+</module>

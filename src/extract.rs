@@ -550,6 +550,27 @@ impl<C: Cost + Ord + Eq + Clone + Debug> Extractor<C> {
             let num_children = func.extraction_num_children();
             let output_name = func.extraction_term_name();
 
+            if std::env::var("EGGLOG_PARANOID_EXTRACT").as_deref() == Ok("1")
+                && func.decl.term_constructor.is_none()
+            {
+                // Verify the saved hyperedge against the live DB with a
+                // key-verified point lookup.
+                let key = &hyperedge[..func.schema.input.len()];
+                let found = egraph.backend.lookup_id(func.backend_id, key);
+                if found != Some(value) {
+                    panic!(
+                        "PARANOID EXTRACT: parent_edge for sort {} value {:?} \
+                         claims {}({:?}) -> {:?}, but DB lookup returns {:?}",
+                        sort.name(),
+                        value,
+                        func_name,
+                        key,
+                        value,
+                        found
+                    );
+                }
+            }
+
             let mut ch_terms: Vec<TermId> = Vec::new();
             for (value, sort) in hyperedge.iter().take(num_children).zip(ch_sorts.iter()) {
                 ch_terms.push(
