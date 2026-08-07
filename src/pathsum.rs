@@ -286,6 +286,22 @@ fn append_x_layer(instructions: &mut Vec<String>, offsets: &[usize]) {
     }
 }
 
+/// Normalize a phase angle into `(0, 2π)` like GraySynth so Mobius-derived
+/// (possibly negative) coefficients emit IEEE bit patterns that fit in `i64`
+/// and round-trip through `apply_rz` / the Python injector.
+fn normalized_rz_bits(angle: f64) -> Option<u64> {
+    let tau = std::f64::consts::TAU;
+    let mut a = angle % tau;
+    if a < 0.0 {
+        a += tau;
+    }
+    if a.abs() < 1e-12 || (tau - a).abs() < 1e-12 {
+        None
+    } else {
+        Some(a.to_bits())
+    }
+}
+
 pub fn synthesize_steiner_logic_64(state: PSum64, gate_count: i64, hw_cost: i64, topology_str: String, cnot_weight: i64, rz_weight: i64) -> String {
     if gate_count <= 2 {
         return "None".to_string();
@@ -301,22 +317,44 @@ pub fn synthesize_steiner_logic_64(state: PSum64, gate_count: i64, hw_cost: i64,
     
     let topo = crate::engine::engine_64::Topology::new(state.num_qubits as usize, &topology_str);
     let mut instructions = Vec::new();
-    let mut parities = Vec::new();
-    
+    // Discrete phase poly is monomial-basis; lift to parities via Mobius
+    // (same as Gray) before building per-term Steiner trees.
+    let mut parities: Vec<(u64, f64)> = Vec::new();
+    let mut monomials: Vec<(u64, f64)> = Vec::new();
     for term in &state.phase_poly.terms {
         let phase_unit = term.0 >> 61;
-        let mask = term.0 & 0x1FFFFFFFFFFFFFFF;
-        let angle = (phase_unit as f64) * std::f64::consts::PI / 4.0;
-        parities.push((mask, angle));
+        let mask = term.0 & 0x1FFF_FFFF_FFFF_FFFF;
+        if (mask & !valid_mask) != 0 {
+            return "None".to_string();
+        }
+        monomials.push((mask, (phase_unit as f64) * std::f64::consts::PI / 4.0));
+    }
+    match crate::engine::engine_64::phase_monomials_to_parities(&monomials) {
+        Some(disc) => parities.extend(disc),
+        None => return "None".to_string(),
     }
     for (i, p) in state.continuous_poly.parities.iter().enumerate() {
         let mask = p.variable_mask;
         let angle = state.continuous_poly.phases[i];
         parities.push((mask, angle));
     }
+    // Merge duplicate parity masks (Mobius + continuous can collide).
+    {
+        use std::collections::HashMap;
+        let mut merged: HashMap<u64, f64> = HashMap::new();
+        for (mask, angle) in parities.drain(..) {
+            if mask != 0 {
+                *merged.entry(mask).or_insert(0.0) += angle;
+            }
+        }
+        parities = merged.into_iter().collect();
+    }
     
     let mut total_cnots = 0;
     for (mask, angle) in parities {
+        let Some(rz_bits) = normalized_rz_bits(angle) else {
+            continue;
+        };
         let mut terminals = Vec::new();
         for i in 0..state.num_qubits {
             if (mask & (1 << i)) != 0 {
@@ -327,7 +365,7 @@ pub fn synthesize_steiner_logic_64(state: PSum64, gate_count: i64, hw_cost: i64,
         if terminals.is_empty() {
             continue;
         } else if terminals.len() == 1 {
-            instructions.push(format!("rz {},{}", terminals[0], angle.to_bits()));
+            instructions.push(format!("rz {},{}", terminals[0], rz_bits as i64));
         } else {
             let edges = topo.steiner_tree_edges(&terminals);
             let root = terminals[0];
@@ -362,7 +400,7 @@ pub fn synthesize_steiner_logic_64(state: PSum64, gate_count: i64, hw_cost: i64,
                 }
             }
             
-            instructions.push(format!("rz {},{}", root, angle.to_bits()));
+            instructions.push(format!("rz {},{}", root, rz_bits as i64));
             
             for &u in post_order.iter().rev() {
                 if u != root {
@@ -574,25 +612,46 @@ pub fn synthesize_steiner_logic_128(state: PSum128, gate_count: i64, hw_cost: i6
     
     let topo = crate::engine::engine_128::Topology::new(state.num_qubits as usize, &topology_str);
     let mut instructions = Vec::new();
-    let mut parities = Vec::new();
-    
+    // Discrete phase poly is monomial-basis; lift to parities via Mobius
+    // (same as Gray) before building per-term Steiner trees.
+    let mut parities: Vec<(u128, f64)> = Vec::new();
+    let mut monomials: Vec<(u128, f64)> = Vec::new();
     for term in &state.phase_poly.terms {
         let phase_unit = term.0 >> 125;
-        let mask = term.0 & 0x1FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF;
-        let angle = (phase_unit as f64) * std::f64::consts::PI / 4.0;
-        parities.push((mask, angle));
+        let mask = term.0 & 0x1FFF_FFFF_FFFF_FFFF_FFFF_FFFF_FFFF_FFFF;
+        if (mask & !valid_mask) != 0 {
+            return "None".to_string();
+        }
+        monomials.push((mask, (phase_unit as f64) * std::f64::consts::PI / 4.0));
+    }
+    match crate::engine::engine_128::phase_monomials_to_parities(&monomials) {
+        Some(disc) => parities.extend(disc),
+        None => return "None".to_string(),
     }
     for (i, p) in state.continuous_poly.parities.iter().enumerate() {
         let mask = p.variable_mask;
         let angle = state.continuous_poly.phases[i];
         parities.push((mask, angle));
     }
+    {
+        use std::collections::HashMap;
+        let mut merged: HashMap<u128, f64> = HashMap::new();
+        for (mask, angle) in parities.drain(..) {
+            if mask != 0 {
+                *merged.entry(mask).or_insert(0.0) += angle;
+            }
+        }
+        parities = merged.into_iter().collect();
+    }
     
     let mut total_cnots = 0;
     for (mask, angle) in parities {
+        let Some(rz_bits) = normalized_rz_bits(angle) else {
+            continue;
+        };
         let mut terminals = Vec::new();
         for i in 0..state.num_qubits {
-            if (mask & (1 << i)) != 0 {
+            if (mask & (1u128 << i)) != 0 {
                 terminals.push(i as usize);
             }
         }
@@ -600,7 +659,7 @@ pub fn synthesize_steiner_logic_128(state: PSum128, gate_count: i64, hw_cost: i6
         if terminals.is_empty() {
             continue;
         } else if terminals.len() == 1 {
-            instructions.push(format!("rz {},{}", terminals[0], angle.to_bits()));
+            instructions.push(format!("rz {},{}", terminals[0], rz_bits as i64));
         } else {
             let edges = topo.steiner_tree_edges(&terminals);
             let root = terminals[0];
@@ -635,7 +694,7 @@ pub fn synthesize_steiner_logic_128(state: PSum128, gate_count: i64, hw_cost: i6
                 }
             }
             
-            instructions.push(format!("rz {},{}", root, angle.to_bits()));
+            instructions.push(format!("rz {},{}", root, rz_bits as i64));
             
             for &u in post_order.iter().rev() {
                 if u != root {
@@ -1102,6 +1161,69 @@ mod gray_tests {
             state_fingerprint_logic_64(replayed),
             fp_orig,
             "pmh affine resynthesis not engine-equal (instructions: {out})"
+        );
+    }
+
+    fn assert_steiner_equal(gates: &[(&str, i64, i64)], n: i64) -> String {
+        let ps = build(gates, n);
+        let fp_orig = state_fingerprint_logic_64(ps.clone());
+        // Empty topology string => fully connected (all-to-all).
+        let out = synthesize_steiner_logic_64(ps, 1_000, i64::MAX, String::new(), 50, 1);
+        assert_ne!(out, "None", "steiner refused a synthesizable state");
+        let replayed = if out == "empty" {
+            id_pathsum_logic_64(n)
+        } else {
+            replay(&out, n)
+        };
+        assert_eq!(
+            state_fingerprint_logic_64(replayed),
+            fp_orig,
+            "steiner resynthesized circuit is not engine-equal (instructions: {out})"
+        );
+        out
+    }
+
+    #[test]
+    fn steiner_discrete_monomials_mobius_round_trip() {
+        // Without Mobius, T-on-parity stores multi-bit monomials that Steiner
+        // would mis-interpret as parities; with Mobius the replay must match.
+        let g = [
+            ("cx", 0, 1),
+            ("t", 1, 0),
+            ("cx", 0, 1),
+            ("s", 0, 0),
+            ("z", 2, 0),
+        ];
+        assert_steiner_equal(&g, 3);
+    }
+
+    #[test]
+    fn steiner_agrees_with_gray_on_all_to_all() {
+        // Same discrete monomial fixture Gray already round-trips; empty
+        // topology => all-to-all, so both synthesizers must match the source.
+        let g = [
+            ("cx", 0, 1),
+            ("t", 1, 0),
+            ("cx", 0, 1),
+            ("s", 0, 0),
+            ("z", 2, 0),
+        ];
+        let ps = build(&g, 3);
+        let fp_orig = state_fingerprint_logic_64(ps.clone());
+        let gray = synthesize_gray_logic_64(ps.clone(), 1_000, i64::MAX, 50, 1);
+        let steiner =
+            synthesize_steiner_logic_64(ps, 1_000, i64::MAX, String::new(), 50, 1);
+        assert_ne!(gray, "None");
+        assert_ne!(steiner, "None");
+        assert_eq!(
+            state_fingerprint_logic_64(replay(&gray, 3)),
+            fp_orig,
+            "gray replay drifted"
+        );
+        assert_eq!(
+            state_fingerprint_logic_64(replay(&steiner, 3)),
+            fp_orig,
+            "steiner replay drifted (instructions: {steiner})"
         );
     }
 }
