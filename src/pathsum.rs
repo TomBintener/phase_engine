@@ -258,6 +258,34 @@ fn rank_m_minus_i_128(state: &EvaluatedPathSum128) -> i64 {
     }
     rank as i64
 }
+/// Qubits whose `out_state` carries a constant-1 term (net X / affine offset).
+/// Linear synthesizers only see `variable_mask`; callers append a trailing X layer.
+fn affine_x_offsets_64(state: &PSum64) -> Vec<usize> {
+    state
+        .out_state
+        .iter()
+        .enumerate()
+        .filter(|(_, poly)| poly.terms.contains(&0))
+        .map(|(q, _)| q)
+        .collect()
+}
+
+fn affine_x_offsets_128(state: &PSum128) -> Vec<usize> {
+    state
+        .out_state
+        .iter()
+        .enumerate()
+        .filter(|(_, poly)| poly.terms.contains(&0))
+        .map(|(q, _)| q)
+        .collect()
+}
+
+fn append_x_layer(instructions: &mut Vec<String>, offsets: &[usize]) {
+    for &q in offsets {
+        instructions.push(format!("x {}", q));
+    }
+}
+
 pub fn synthesize_steiner_logic_64(state: PSum64, gate_count: i64, hw_cost: i64, topology_str: String, cnot_weight: i64, rz_weight: i64) -> String {
     if gate_count <= 2 {
         return "None".to_string();
@@ -268,10 +296,8 @@ pub fn synthesize_steiner_logic_64(state: PSum64, gate_count: i64, hw_cost: i64,
             return "None".to_string(); 
         }
     }
-    
-    if state.out_state.iter().any(|poly| poly.terms.contains(&0)) {
-        return "None".to_string();
-    }
+    // Affine/X offsets are synthesizable: linear CNOT/RZ block + trailing X layer.
+    let x_offsets = affine_x_offsets_64(&state);
     
     let topo = crate::engine::engine_64::Topology::new(state.num_qubits as usize, &topology_str);
     let mut instructions = Vec::new();
@@ -365,6 +391,7 @@ pub fn synthesize_steiner_logic_64(state: PSum64, gate_count: i64, hw_cost: i64,
     } else {
         return "None".to_string();
     }
+    append_x_layer(&mut instructions, &x_offsets);
     
     let synth_cost = ((instructions.len() as i64) - total_cnots) * rz_weight + total_cnots * cnot_weight;
     if synth_cost >= hw_cost {
@@ -396,24 +423,19 @@ pub fn synthesize_pmh_logic_64(state: PSum64, gate_count: i64) -> String {
             return "None".to_string();
         }
     }
-    // 1c. No constant terms (monomial `0`) in out_state.
-    // apply_x XORs in {0}, leaving a net footprint when an odd number of X gates
-    // have been applied to a qubit. variable_mask is blind to this (0 | mask == mask),
-    // so we check the terms SmallVec directly. Even counts of X cancel naturally via
-    // BooleanPoly::add_assign, so this only fires when there is a genuine net X effect.
-    if state.out_state.iter().any(|poly| poly.terms.contains(&0)) {
-        return "None".to_string();
-    }
+    // 1c. Affine/X offsets (monomial `0`) are kept and emitted as a trailing X layer.
+    let x_offsets = affine_x_offsets_64(&state);
     
-    // 2. Strict CNOT block boundary
+    // 2. Strict CNOT block boundary (pure-X / identity has rank 0 — still allow
+    //    a trailing X-only answer when offsets are present).
     let rank = rank_m_minus_i_64(&state);
-    if rank == 0 {
+    if rank == 0 && x_offsets.is_empty() {
         return "None".to_string();
     }
     
     // 3. Rank(M - I) lower bound
     let r = rank;
-    if gate_count <= r {
+    if rank > 0 && gate_count <= r {
         return "None".to_string();
     }
     
@@ -424,16 +446,30 @@ pub fn synthesize_pmh_logic_64(state: PSum64, gate_count: i64) -> String {
     }
     
     if let Ok(cnots) = crate::engine::engine_64::synthesize_cnot_matrix(matrix, state.num_qubits as usize) {
-        if (cnots.len() as i64) < gate_count {
-            // Build the string representation as simple "c,t;c,t"
-            if cnots.is_empty() {
+        let mut instructions: Vec<String> = cnots
+            .iter()
+            .map(|&(c, t)| format!("cx {},{}", c, t))
+            .collect();
+        append_x_layer(&mut instructions, &x_offsets);
+        if (instructions.len() as i64) < gate_count {
+            if instructions.is_empty() {
                 return "empty".to_string();
             }
-            let str_repr = cnots.iter()
-                .map(|&(c, t)| format!("{},{}", c, t))
-                .collect::<Vec<_>>()
-                .join(";");
-            return str_repr;
+            // Named form whenever X appears; legacy "c,t;c,t" when CX-only.
+            if x_offsets.is_empty() {
+                return cnots
+                    .iter()
+                    .map(|&(c, t)| format!("{},{}", c, t))
+                    .collect::<Vec<_>>()
+                    .join(";");
+            }
+            return instructions.join(";");
+        }
+    } else if rank == 0 && !x_offsets.is_empty() {
+        let mut instructions = Vec::new();
+        append_x_layer(&mut instructions, &x_offsets);
+        if (instructions.len() as i64) < gate_count {
+            return instructions.join(";");
         }
     }
     
@@ -465,13 +501,19 @@ pub fn synthesize_gray_logic_64(
     let n = state.num_qubits as usize;
     let valid_mask: u64 = if n >= 64 { u64::MAX } else { (1u64 << n) - 1 };
 
-    // Purity: linear, affine-free out_state over input variables only.
-    for poly in &state.out_state {
+    // Purity: linear out_state over input variables; constant-1 (affine/X)
+    // terms are allowed and emitted as a trailing X layer.
+    let mut x_offsets = Vec::new();
+    for (q, poly) in state.out_state.iter().enumerate() {
         if (poly.variable_mask & !valid_mask) != 0 {
             return "None".to_string();
         }
-        if poly.terms.iter().any(|&t| t == 0 || t.count_ones() != 1) {
-            return "None".to_string();
+        for &t in &poly.terms {
+            if t == 0 {
+                x_offsets.push(q);
+            } else if t.count_ones() != 1 {
+                return "None".to_string();
+            }
         }
     }
 
@@ -502,7 +544,8 @@ pub fn synthesize_gray_logic_64(
 
     let target: Vec<u64> = (0..n).map(|i| state.out_state[i].variable_mask).collect();
     match crate::engine::engine_64::synthesize_gray_network(&parities, &target, n) {
-        Some((instructions, total_cnots)) => {
+        Some((mut instructions, total_cnots)) => {
+            append_x_layer(&mut instructions, &x_offsets);
             let rz_count = instructions.len() as i64 - total_cnots;
             let synth_cost = rz_count * rz_weight + total_cnots * cnot_weight;
             if synth_cost >= hw_cost {
@@ -527,10 +570,7 @@ pub fn synthesize_steiner_logic_128(state: PSum128, gate_count: i64, hw_cost: i6
             return "None".to_string(); 
         }
     }
-    
-    if state.out_state.iter().any(|poly| poly.terms.contains(&0)) {
-        return "None".to_string();
-    }
+    let x_offsets = affine_x_offsets_128(&state);
     
     let topo = crate::engine::engine_128::Topology::new(state.num_qubits as usize, &topology_str);
     let mut instructions = Vec::new();
@@ -624,6 +664,7 @@ pub fn synthesize_steiner_logic_128(state: PSum128, gate_count: i64, hw_cost: i6
     } else {
         return "None".to_string();
     }
+    append_x_layer(&mut instructions, &x_offsets);
     
     let synth_cost = ((instructions.len() as i64) - total_cnots) * rz_weight + total_cnots * cnot_weight;
     if synth_cost >= hw_cost {
@@ -653,12 +694,17 @@ pub fn synthesize_gray_logic_128(
     let n = state.num_qubits as usize;
     let valid_mask: u128 = if n >= 128 { u128::MAX } else { (1u128 << n) - 1 };
 
-    for poly in &state.out_state {
+    let mut x_offsets = Vec::new();
+    for (q, poly) in state.out_state.iter().enumerate() {
         if (poly.variable_mask & !valid_mask) != 0 {
             return "None".to_string();
         }
-        if poly.terms.iter().any(|&t| t == 0 || t.count_ones() != 1) {
-            return "None".to_string();
+        for &t in &poly.terms {
+            if t == 0 {
+                x_offsets.push(q);
+            } else if t.count_ones() != 1 {
+                return "None".to_string();
+            }
         }
     }
 
@@ -689,7 +735,8 @@ pub fn synthesize_gray_logic_128(
 
     let target: Vec<u128> = (0..n).map(|i| state.out_state[i].variable_mask).collect();
     match crate::engine::engine_128::synthesize_gray_network(&parities, &target, n) {
-        Some((instructions, total_cnots)) => {
+        Some((mut instructions, total_cnots)) => {
+            append_x_layer(&mut instructions, &x_offsets);
             let rz_count = instructions.len() as i64 - total_cnots;
             let synth_cost = rz_count * rz_weight + total_cnots * cnot_weight;
             if synth_cost >= hw_cost {
@@ -720,24 +767,18 @@ pub fn synthesize_pmh_logic_128(state: PSum128, gate_count: i64) -> String {
             return "None".to_string();
         }
     }
-    // 1c. No constant terms (monomial `0`) in out_state.
-    // apply_x XORs in {0}, leaving a net footprint when an odd number of X gates
-    // have been applied to a qubit. variable_mask is blind to this (0 | mask == mask),
-    // so we check the terms SmallVec directly. Even counts of X cancel naturally via
-    // BooleanPoly::add_assign, so this only fires when there is a genuine net X effect.
-    if state.out_state.iter().any(|poly| poly.terms.contains(&0)) {
-        return "None".to_string();
-    }
+    // 1c. Affine/X offsets kept and emitted as a trailing X layer.
+    let x_offsets = affine_x_offsets_128(&state);
     
     // 2. Strict CNOT block boundary
     let rank = rank_m_minus_i_128(&state);
-    if rank == 0 {
+    if rank == 0 && x_offsets.is_empty() {
         return "None".to_string();
     }
     
     // 3. Rank(M - I) lower bound
     let r = rank;
-    if gate_count <= r {
+    if rank > 0 && gate_count <= r {
         return "None".to_string();
     }
     
@@ -748,19 +789,29 @@ pub fn synthesize_pmh_logic_128(state: PSum128, gate_count: i64) -> String {
     }
     
     if let Ok(cnots) = crate::engine::engine_64::synthesize_cnot_matrix(matrix, state.num_qubits as usize) {
-        if (cnots.len() as i64) < gate_count {
-            // Build the string representation as simple "c,t;c,t"
-            if cnots.is_empty() {
+        let mut instructions: Vec<String> = cnots
+            .iter()
+            .map(|&(c, t)| format!("cx {},{}", c, t))
+            .collect();
+        append_x_layer(&mut instructions, &x_offsets);
+        if (instructions.len() as i64) < gate_count {
+            if instructions.is_empty() {
                 return "empty".to_string();
             }
-            let mut parts = Vec::new();
-            for &(c, t) in &cnots {
-                parts.push(format!("{},{}", c, t));
+            if x_offsets.is_empty() {
+                return cnots
+                    .iter()
+                    .map(|&(c, t)| format!("{},{}", c, t))
+                    .collect::<Vec<_>>()
+                    .join(";");
             }
-            let join_str = parts.join(";");
-            
-            // To pass through E-Graph dynamically we just return the AST string mapping string
-            return join_str;
+            return instructions.join(";");
+        }
+    } else if rank == 0 && !x_offsets.is_empty() {
+        let mut instructions = Vec::new();
+        append_x_layer(&mut instructions, &x_offsets);
+        if (instructions.len() as i64) < gate_count {
+            return instructions.join(";");
         }
     }
     
@@ -906,6 +957,7 @@ mod gray_tests {
             ps = match gate {
                 "cx" => apply_cx_logic_64(ps, parts[0], parts[1]),
                 "rz" => apply_rz_logic_64(ps, parts[0], parts[1]),
+                "x" => apply_gate_logic_64(ps, parts[0], |st, q| st.apply_x(q)),
                 other => panic!("unexpected gate from gray synthesis: {other}"),
             };
         }
@@ -1016,5 +1068,40 @@ mod gray_tests {
         // hw_cost 0 means any synthesis is too expensive.
         let out = synthesize_gray_logic_64(ps, 1_000, 0, 50, 1);
         assert_eq!(out, "None");
+    }
+
+    #[test]
+    fn affine_x_offset_round_trips_gray() {
+        // CX block followed by a net X — previously refused as affine.
+        let mut ps = id_pathsum_logic_64(2);
+        ps = apply_cx_logic_64(ps, 0, 1);
+        ps = apply_gate_logic_64(ps, 1, |st, q| st.apply_x(q));
+        let fp_orig = state_fingerprint_logic_64(ps.clone());
+        let out = synthesize_gray_logic_64(ps, 1_000, i64::MAX, 50, 1);
+        assert_ne!(out, "None", "gray should accept affine/X offsets");
+        assert!(out.contains("x 1"), "expected trailing X layer: {out}");
+        let replayed = replay(&out, 2);
+        assert_eq!(
+            state_fingerprint_logic_64(replayed),
+            fp_orig,
+            "affine resynthesis not engine-equal (instructions: {out})"
+        );
+    }
+
+    #[test]
+    fn affine_x_offset_round_trips_pmh() {
+        let mut ps = id_pathsum_logic_64(2);
+        ps = apply_cx_logic_64(ps, 0, 1);
+        ps = apply_gate_logic_64(ps, 0, |st, q| st.apply_x(q));
+        let fp_orig = state_fingerprint_logic_64(ps.clone());
+        let out = synthesize_pmh_logic_64(ps, 1_000);
+        assert_ne!(out, "None", "pmh should accept affine/X offsets");
+        assert!(out.contains("x 0"), "expected trailing X layer: {out}");
+        let replayed = replay(&out, 2);
+        assert_eq!(
+            state_fingerprint_logic_64(replayed),
+            fp_orig,
+            "pmh affine resynthesis not engine-equal (instructions: {out})"
+        );
     }
 }
