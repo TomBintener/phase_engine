@@ -48,7 +48,6 @@ macro_rules! define_reference_logic {
         /// (row-major, entry [out * dim + in]). Input variables occupy bits
         /// `0..n`, path variables bits `n..n+m`.
         pub fn pathsum_to_matrix(state: &EvaluatedPathSum) -> Vec<C64> {
-            assert_eq!(state.comp_mask, 0, "reference conversion expects comp_mask == 0");
             let n = state.num_qubits as usize;
             let m = state.num_path_vars as usize;
             assert!(n + m <= 24, "state too large for brute-force enumeration");

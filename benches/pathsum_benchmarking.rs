@@ -113,7 +113,7 @@ macro_rules! engine_bench {
             let mut peak_phase_terms = 0usize;
             let run_all = |peak: &mut usize| {
                 for w in &windows {
-                    let mut state = EvaluatedPathSum::new_zero_state(n as u32);
+                    let mut state = EvaluatedPathSum::new_id(n as u32);
                     for g in w {
                         match *g {
                             Gate::X(q) => state.apply_x(q),
@@ -317,7 +317,7 @@ fn main() {
         engine_64,
         64,
         PSum64,
-        zero_state_logic_64,
+        id_pathsum_logic_64,
         apply_gate_logic_64,
         apply_gate_no_reduce_logic_64,
         apply_cx_logic_64,
@@ -327,7 +327,7 @@ fn main() {
         engine_128,
         128,
         PSum128,
-        zero_state_logic_128,
+        id_pathsum_logic_128,
         apply_gate_logic_128,
         apply_gate_no_reduce_logic_128,
         apply_cx_logic_128,
@@ -337,7 +337,7 @@ fn main() {
         engine_64,
         64,
         PSum64,
-        zero_state_logic_64,
+        id_pathsum_logic_64,
         apply_gate_logic_64,
         apply_gate_no_reduce_logic_64,
         apply_cx_logic_64,
@@ -348,7 +348,7 @@ fn main() {
         engine_128,
         128,
         PSum128,
-        zero_state_logic_128,
+        id_pathsum_logic_128,
         apply_gate_logic_128,
         apply_gate_no_reduce_logic_128,
         apply_cx_logic_128,

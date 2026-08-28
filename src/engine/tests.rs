@@ -83,7 +83,6 @@ macro_rules! define_tests_logic {
         #[test]
         fn test_reduce_tttdg_to_t() {
             let mut state = EvaluatedPathSum::new_id(1);
-            state.comp_mask = 0;
             state.apply_t(0);
             state.apply_t(0);
             state.apply_tdg(0);
@@ -114,7 +113,6 @@ macro_rules! define_tests_logic {
         #[test]
         fn test_apply_cx() {
             let mut state = EvaluatedPathSum::new_id(2);
-            state.comp_mask = 0;
             state.apply_cx(0, 1);
             assert_eq!(state.out_state[1].terms.as_slice(), &[1 << 0, 1 << 1]);
         }
@@ -139,7 +137,6 @@ macro_rules! define_tests_logic {
         #[test]
         fn test_apply_z_and_s_and_t() {
             let mut state = EvaluatedPathSum::new_id(1);
-            state.comp_mask = 0;
             state.apply_z(0); // Phase 4
             state.apply_s(0); // Phase 2
             state.apply_t(0); // Phase 1
@@ -151,7 +148,6 @@ macro_rules! define_tests_logic {
         #[test]
         fn test_cx_cx_identity() {
             let mut state = EvaluatedPathSum::new_id(2);
-            state.comp_mask = 0;
             state.apply_cx(0, 1);
             state.apply_cx(0, 1);
             state.reduce();
@@ -175,7 +171,6 @@ macro_rules! define_tests_logic {
         #[test]
         fn test_apply_sdg_tdg() {
             let mut state = EvaluatedPathSum::new_id(1);
-            state.comp_mask = 0;
             state.apply_sdg(0); // Phase -2 (or 6 mod 8)
             state.apply_tdg(0); // Phase -1 (or 7 mod 8)
             // 6 + 7 = 13 mod 8 = 5
@@ -242,14 +237,12 @@ macro_rules! define_tests_logic {
         fn test_promote_clifford_expansion() {
             // Apply S directly
             let mut state_s = EvaluatedPathSum::new_id(2);
-            state_s.comp_mask = 0;
             state_s.apply_cx(0, 1);
             state_s.apply_s(1);
             state_s.reduce();
 
             // Apply Rz(PI/2) which will trigger promote_cliffords
             let mut state_rz = EvaluatedPathSum::new_id(2);
-            state_rz.comp_mask = 0;
             state_rz.apply_cx(0, 1);
             state_rz.apply_rz(1, std::f64::consts::FRAC_PI_2);
             state_rz.reduce();
@@ -261,7 +254,6 @@ macro_rules! define_tests_logic {
         #[test]
         fn test_continuous_accumulation_triggers_promotion() {
             let mut state = EvaluatedPathSum::new_id(1);
-            state.comp_mask = 0;
             // Apply half a T gate (pi/8)
             state.apply_rz(0, std::f64::consts::FRAC_PI_8);
             
@@ -283,12 +275,10 @@ macro_rules! define_tests_logic {
         #[test]
         fn test_negative_rz_matches_sdg() {
             let mut state_sdg = EvaluatedPathSum::new_id(2);
-            state_sdg.comp_mask = 0;
             state_sdg.apply_cx(0, 1);
             state_sdg.apply_sdg(1);
             
             let mut state_rz = EvaluatedPathSum::new_id(2);
-            state_rz.comp_mask = 0;
             state_rz.apply_cx(0, 1);
             state_rz.apply_rz(1, -std::f64::consts::FRAC_PI_2); // -pi/2
             
@@ -299,14 +289,12 @@ macro_rules! define_tests_logic {
         fn test_rz_t_triplet_expansion() {
             // Apply T gate on 3 entangled qubits
             let mut state_t = EvaluatedPathSum::new_id(3);
-            state_t.comp_mask = 0;
             state_t.apply_cx(0, 2);
             state_t.apply_cx(1, 2);
             state_t.apply_t(2);
             
             // Apply Rz(PI/4) on 3 entangled qubits
             let mut state_rz = EvaluatedPathSum::new_id(3);
-            state_rz.comp_mask = 0;
             state_rz.apply_cx(0, 2);
             state_rz.apply_cx(1, 2);
             state_rz.apply_rz(2, std::f64::consts::FRAC_PI_4);
@@ -318,7 +306,6 @@ macro_rules! define_tests_logic {
         #[test]
         fn test_large_wrap_around_rz() {
             let mut state = EvaluatedPathSum::new_id(1);
-            state.comp_mask = 0;
             // Apply 3 PI. This should modulo 2PI and become PI (Z gate, phase 4)
             state.apply_rz(0, 3.0 * std::f64::consts::PI);
             
@@ -328,13 +315,11 @@ macro_rules! define_tests_logic {
         #[test]
         fn test_ibm_z_slide_control() {
             let mut s1 = EvaluatedPathSum::new_id(2);
-            s1.comp_mask = 0;
             s1.apply_cx(0, 1);
             s1.apply_z(0);
             s1.reduce();
 
             let mut s2 = EvaluatedPathSum::new_id(2);
-            s2.comp_mask = 0;
             s2.apply_z(0);
             s2.apply_cx(0, 1);
             s2.reduce();
@@ -346,13 +331,11 @@ macro_rules! define_tests_logic {
         #[test]
         fn test_ibm_x_slide_target() {
             let mut s1 = EvaluatedPathSum::new_id(2);
-            s1.comp_mask = 0;
             s1.apply_cx(0, 1);
             s1.apply_x(1);
             s1.reduce();
 
             let mut s2 = EvaluatedPathSum::new_id(2);
-            s2.comp_mask = 0;
             s2.apply_x(1);
             s2.apply_cx(0, 1);
             s2.reduce();
@@ -364,13 +347,11 @@ macro_rules! define_tests_logic {
         #[test]
         fn test_ibm_sx_slide_target() {
             let mut s1 = EvaluatedPathSum::new_id(2);
-            s1.comp_mask = 0;
             s1.apply_cx(0, 1);
             s1.apply_sx(1);
             s1.reduce();
 
             let mut s2 = EvaluatedPathSum::new_id(2);
-            s2.comp_mask = 0;
             s2.apply_sx(1);
             s2.apply_cx(0, 1);
             s2.reduce();
@@ -382,13 +363,11 @@ macro_rules! define_tests_logic {
         #[test]
         fn test_ibm_anti_commutation() {
             let mut s1 = EvaluatedPathSum::new_id(1);
-            s1.comp_mask = 0;
             s1.apply_x(0);
             s1.apply_rz(0, 0.1);
             s1.reduce();
 
             let mut s2 = EvaluatedPathSum::new_id(1);
-            s2.comp_mask = 0;
             s2.apply_rz(0, -0.1);
             s2.apply_x(0);
             s2.reduce();
@@ -419,7 +398,6 @@ macro_rules! define_tests_logic {
         fn test_ibm_trivial_inverses() {
             // X * X
             let mut s1 = EvaluatedPathSum::new_id(1);
-            s1.comp_mask = 0;
             s1.apply_x(0);
             s1.apply_x(0);
             s1.reduce();
@@ -427,7 +405,6 @@ macro_rules! define_tests_logic {
 
             // Z * Z
             let mut s2 = EvaluatedPathSum::new_id(1);
-            s2.comp_mask = 0;
             s2.apply_z(0);
             s2.apply_z(0);
             s2.reduce();
@@ -436,7 +413,6 @@ macro_rules! define_tests_logic {
 
             // SX * SX
             let mut s3 = EvaluatedPathSum::new_id(1);
-            s3.comp_mask = 0;
             s3.apply_sx(0);
             s3.apply_sx(0);
             s3.reduce();
@@ -493,58 +469,31 @@ macro_rules! define_tests_logic {
         }
 
         #[test]
-        fn test_eigenstate_bitmask_tracking() {
-            // Test 1: Initial state |000>
-            let mut state = EvaluatedPathSum::new_zero_state(3);
-            assert_eq!(state.comp_mask, 0b111);
-            assert_eq!(state.val_mask, 0);
-
-            // Test 2: Absorption of phase gates on |0>
-            state.apply_z(0);
-            state.apply_s(1);
-            state.apply_t(2);
-            state.apply_rz(0, 1.234);
-            assert!(state.phase_poly.terms.is_empty());
-            assert!(state.continuous_poly.parities.is_empty());
-
-            // Test 3: X gate flips val_mask on computational basis
-            state.apply_x(0);
-            assert_eq!(state.comp_mask, 0b111);
-            assert_eq!(state.val_mask, 0b001); // Qubit 0 is now |1>
-
-            // Test 4: Phase gates on |1> are NOT absorbed
-            state.apply_z(0);
-            assert_eq!(state.phase_poly.terms.len(), 1);
-
-            // Test 5: H and SX gates clear comp_mask bit
-            state.apply_h(1);
-            assert_eq!(state.comp_mask, 0b101); // Qubit 1 is in superposition
-            state.apply_sx(2);
-            assert_eq!(state.comp_mask, 0b001); // Qubits 1 and 2 in superposition
+        fn test_hx_equals_zh_from_id() {
+            let mut a = EvaluatedPathSum::new_id(1);
+            a.apply_x(0);
+            a.apply_h(0);
+            a.reduce();
+            let mut b = EvaluatedPathSum::new_id(1);
+            b.apply_h(0);
+            b.apply_z(0);
+            b.reduce();
+            assert_eq!(a, b, "HX and ZH must intern equal from I_n");
         }
 
         #[test]
-        fn test_eigenstate_cx_modes() {
-            let mut state = EvaluatedPathSum::new_zero_state(3);
-            
-            // Mode 1: Control in |0> (qc=0, qt=1). Should act as identity on target!
-            state.apply_cx(0, 1);
-            assert_eq!(state.comp_mask, 0b111);
-            assert_eq!(state.val_mask, 0);
-            assert_eq!(state.out_state[1].terms.as_slice(), &[1 << 1]);
-
-            // Mode 2: Control in |1> (qc=0, qt=1). Should act as X on target!
-            state.apply_x(0);
-            assert_eq!(state.val_mask, 0b001);
-            state.apply_cx(0, 1);
-            assert_eq!(state.comp_mask, 0b111);
-            assert_eq!(state.val_mask, 0b011); // Both q0 and q1 are |1>
-
-            // Mode 3: Control in superposition (qc=2, qt=1). Should entangle target!
-            state.apply_h(2);
-            assert_eq!(state.comp_mask, 0b011); // q2 outside comp basis
-            state.apply_cx(2, 1);
-            assert_eq!(state.comp_mask, 0b001); // q1 also outside comp basis now!
+        fn test_x_commutes_past_cx_target_from_id() {
+            let mut a = EvaluatedPathSum::new_id(2);
+            a.apply_h(0);
+            a.apply_x(1);
+            a.apply_cx(0, 1);
+            a.reduce();
+            let mut b = EvaluatedPathSum::new_id(2);
+            b.apply_h(0);
+            b.apply_cx(0, 1);
+            b.apply_x(1);
+            b.reduce();
+            assert_eq!(a, b, "X on CX target commutes from I_n");
         }
     }
 }

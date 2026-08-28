@@ -403,14 +403,6 @@ macro_rules! define_reduction_logic {
                         }
                     }
                 }
-
-                // Canonical-form invariant, established by construction at the
-                // comp_mask-clearing mutators (apply_cx/apply_sx/apply_h) and
-                // new_basis_state: no val bit may survive outside comp_mask.
-                debug_assert!(
-                    self.val_mask & !self.comp_mask == 0,
-                    "val_mask has bits outside comp_mask; a comp-clearing mutator failed to scrub"
-                );
             }
         }
     }

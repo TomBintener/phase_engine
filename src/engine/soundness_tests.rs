@@ -347,59 +347,31 @@ macro_rules! define_soundness_tests_logic {
             }
         }
 
-        /// The val_mask canonicalization: comp_mask-clearing mutators must
-        /// scrub the corresponding val bit, so no state ever carries val bits
-        /// outside comp_mask (they are semantically dead but participate in
-        /// Eq/Hash and previously caused e-graph misses).
+        /// Operator identities that used to be checked only from `|0>` (ket
+        /// masks). They must still intern-equal when folded from \(I_n\).
         #[test]
-        fn test_val_mask_never_escapes_comp_mask() {
-            // X;H on a fresh qubit.
-            let mut s = EvaluatedPathSum::new_zero_state(2);
-            s.apply_x(0);
-            s.apply_h(0);
-            assert_eq!(s.val_mask & !s.comp_mask, 0, "X;H leaked a dead val bit");
-
-            // X;SX on a fresh qubit.
-            let mut s = EvaluatedPathSum::new_zero_state(2);
-            s.apply_x(0);
-            s.apply_sx(0);
-            assert_eq!(s.val_mask & !s.comp_mask, 0, "X;SX leaked a dead val bit");
-
-            // Superposed-control CX onto a |1> target.
-            let mut s = EvaluatedPathSum::new_zero_state(2);
-            s.apply_x(1);
-            s.apply_h(0);
-            s.apply_cx(0, 1);
-            assert_eq!(s.val_mask & !s.comp_mask, 0, "superposed CX leaked a dead val bit");
-
-            // The FFI accepts arbitrary masks: new_basis_state must scrub.
-            let s = EvaluatedPathSum::new_basis_state(2, 0b01, 0b11);
-            assert_eq!(s.val_mask & !s.comp_mask, 0, "new_basis_state kept out-of-comp val bits");
-
-            // Two orders of producing the same state must now compare equal.
-            // (a) X;H vs H;Z on |0>: both denote H|1> = |->.
-            let mut a = EvaluatedPathSum::new_zero_state(2);
+        fn test_operator_identities_from_id() {
+            let mut a = EvaluatedPathSum::new_id(2);
             a.apply_x(0);
             a.apply_h(0);
             a.reduce();
-            let mut b = EvaluatedPathSum::new_zero_state(2);
+            let mut b = EvaluatedPathSum::new_id(2);
             b.apply_h(0);
             b.apply_z(0);
             b.reduce();
-            assert_eq!(a, b, "X;H and H;Z canonical states must be Eq-equal");
+            assert_eq!(a, b, "HX and ZH must be Eq-equal from I_n");
 
-            // (b) X-then-CX vs CX-then-X on the target (superposed control).
-            let mut a = EvaluatedPathSum::new_zero_state(2);
+            let mut a = EvaluatedPathSum::new_id(2);
             a.apply_h(0);
             a.apply_x(1);
             a.apply_cx(0, 1);
             a.reduce();
-            let mut b = EvaluatedPathSum::new_zero_state(2);
+            let mut b = EvaluatedPathSum::new_id(2);
             b.apply_h(0);
             b.apply_cx(0, 1);
             b.apply_x(1);
             b.reduce();
-            assert_eq!(a, b, "X;CX and CX;X canonical states must be Eq-equal");
+            assert_eq!(a, b, "X;CX and CX;X on the target must be Eq-equal from I_n");
         }
 
         /// Sanity: identical circuits must produce Eq-equal canonical states.

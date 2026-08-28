@@ -9,14 +9,15 @@ macro_rules! define_evaluator_logic {
         pub struct EvaluatedPathSum {
             pub num_qubits: u32,
             pub num_path_vars: u32,
-            pub comp_mask: $primitive,
-            pub val_mask: $primitive,
             pub out_state: Vec<BooleanPoly>,
             pub phase_poly: CanonicalPhasePoly,
             pub continuous_poly: ContinuousPhasePoly,
         }
 
         impl EvaluatedPathSum {
+            /// Identity *operator* \(I_n\): `out_state[i] = x_i`, empty phases.
+            /// Ket constructors (`zero_state` / `basis_state`) are intentionally
+            /// absent — AGES equality is operator equality from this baseline.
             pub fn new_id(num_qubits: u32) -> Self {
                 let mut out_state = Vec::with_capacity(num_qubits as usize);
                 for i in 0..num_qubits {
@@ -25,37 +26,6 @@ macro_rules! define_evaluator_logic {
                 Self {
                     num_qubits,
                     num_path_vars: 0,
-                    comp_mask: 0,
-                    val_mask: 0,
-                    out_state,
-                    phase_poly: CanonicalPhasePoly { terms: smallvec::smallvec![] },
-                    continuous_poly: ContinuousPhasePoly::new(),
-                }
-            }
-
-            pub fn new_zero_state(num_qubits: u32) -> Self {
-                let comp_mask = if num_qubits >= (<$primitive>::BITS) {
-                    !0
-                } else {
-                    ((1 as $primitive) << num_qubits) - 1
-                };
-                Self::new_basis_state(num_qubits, comp_mask, 0)
-            }
-
-            pub fn new_basis_state(num_qubits: u32, comp_mask: $primitive, val_mask: $primitive) -> Self {
-                let mut out_state = Vec::with_capacity(num_qubits as usize);
-                for i in 0..num_qubits {
-                    out_state.push(BooleanPoly::from_terms(smallvec::smallvec![1 as $primitive << i]));
-                }
-                Self {
-                    num_qubits,
-                    num_path_vars: 0,
-                    comp_mask,
-                    // Canonical-form invariant: val_mask bits outside comp_mask
-                    // are semantically dead but participate in Eq/Hash, so they
-                    // are scrubbed here and at every comp_mask-clearing mutator.
-                    // (The FFI accepts arbitrary masks from Python.)
-                    val_mask: val_mask & comp_mask,
                     out_state,
                     phase_poly: CanonicalPhasePoly { terms: smallvec::smallvec![] },
                     continuous_poly: ContinuousPhasePoly::new(),
@@ -63,40 +33,12 @@ macro_rules! define_evaluator_logic {
             }
 
             pub fn apply_x(&mut self, q: usize) {
-                let bit = 1 as $primitive << q;
-                if (self.comp_mask & bit) != 0 {
-                    self.val_mask ^= bit;
-                }
                 let constant_one = BooleanPoly::from_terms(smallvec::smallvec![0]);
                 self.out_state[q].add_assign(&constant_one);
             }
 
             pub fn apply_cx(&mut self, qc: usize, qt: usize) {
                 assert!(qc != qt, "CX control and target must be distinct");
-                let c_bit = 1 as $primitive << qc;
-                let t_bit = 1 as $primitive << qt;
-                
-                let c_is_comp = (self.comp_mask & c_bit) != 0;
-                let c_is_one  = (self.val_mask & c_bit) != 0;
-                
-                if c_is_comp && !c_is_one {
-                    // Control is in |0>: CX acts as identity on target! Skip polynomial update!
-                    return;
-                } else if c_is_comp && c_is_one {
-                    // Control is in |1>: CX acts as X on target!
-                    if (self.comp_mask & t_bit) != 0 {
-                        self.val_mask ^= t_bit;
-                    }
-                    let constant_one = BooleanPoly::from_terms(smallvec::smallvec![0]);
-                    self.out_state[qt].add_assign(&constant_one);
-                    return;
-                } else {
-                    // Control is in superposition: Target becomes entangled, leaves computational basis!
-                    self.comp_mask &= !t_bit;
-                    // Scrub the now-dead val bit so it cannot leak into Eq/Hash.
-                    self.val_mask &= !t_bit;
-                }
-
                 let (ctrl_poly, tgt_poly) = if qc < qt {
                     let (left, right) = self.out_state.split_at_mut(qt);
                     (&left[qc], &mut right[0])
@@ -162,54 +104,31 @@ macro_rules! define_evaluator_logic {
             }
 
             pub fn apply_z(&mut self, q: usize) {
-                let bit = 1 as $primitive << q;
-                if (self.comp_mask & bit) != 0 && (self.val_mask & bit) == 0 {
-                    return;
-                }
                 let terms = self.out_state[q].terms.clone();
                 self.push_phase_expansion(&terms, 4);
             }
 
             pub fn apply_s(&mut self, q: usize) {
-                let bit = 1 as $primitive << q;
-                if (self.comp_mask & bit) != 0 && (self.val_mask & bit) == 0 {
-                    return;
-                }
                 let terms = self.out_state[q].terms.clone();
                 self.push_phase_expansion(&terms, 2);
             }
 
             pub fn apply_sdg(&mut self, q: usize) {
-                let bit = 1 as $primitive << q;
-                if (self.comp_mask & bit) != 0 && (self.val_mask & bit) == 0 {
-                    return;
-                }
                 let terms = self.out_state[q].terms.clone();
                 self.push_phase_expansion(&terms, 6);
             }
 
             pub fn apply_t(&mut self, q: usize) {
-                let bit = 1 as $primitive << q;
-                if (self.comp_mask & bit) != 0 && (self.val_mask & bit) == 0 {
-                    return;
-                }
                 let terms = self.out_state[q].terms.clone();
                 self.push_phase_expansion(&terms, 1);
             }
 
             pub fn apply_tdg(&mut self, q: usize) {
-                let bit = 1 as $primitive << q;
-                if (self.comp_mask & bit) != 0 && (self.val_mask & bit) == 0 {
-                    return;
-                }
                 let terms = self.out_state[q].terms.clone();
                 self.push_phase_expansion(&terms, 7);
             }
 
             pub fn apply_sx(&mut self, q: usize) {
-                self.comp_mask &= !(1 as $primitive << q);
-                // Scrub the now-dead val bit so it cannot leak into Eq/Hash.
-                self.val_mask &= !(1 as $primitive << q);
                 let var_index = self.num_qubits + self.num_path_vars;
                 assert!(var_index < (<$primitive>::BITS - 3), "Exceeded variable limit");
                 let v_mask = 1 as $primitive << var_index;
@@ -226,9 +145,6 @@ macro_rules! define_evaluator_logic {
             }
 
             pub fn apply_h(&mut self, q: usize) {
-                self.comp_mask &= !(1 as $primitive << q);
-                // Scrub the now-dead val bit so it cannot leak into Eq/Hash.
-                self.val_mask &= !(1 as $primitive << q);
                 let var_index = self.num_qubits + self.num_path_vars;
                 assert!(var_index < (<$primitive>::BITS - 3), "Exceeded variable limit");
                 let v_mask = 1 as $primitive << var_index;
@@ -255,10 +171,6 @@ macro_rules! define_evaluator_logic {
             }
 
             pub fn apply_rz(&mut self, q: usize, theta: f64) {
-                let bit = 1 as $primitive << q;
-                if (self.comp_mask & bit) != 0 && (self.val_mask & bit) == 0 {
-                    return;
-                }
                 let current_parity = self.out_state[q].clone();
                 self.continuous_poly.apply_phase(current_parity, theta);
                 self.promote_cliffords();
