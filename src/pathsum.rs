@@ -1497,7 +1497,7 @@ mod pmh_pathsum_tests {
 
     fn dense_gl_64(n: usize, seed: u64) -> Vec<u64> {
         let mut rng = seed;
-        let mut lcg = |s: &mut u64| {
+        let lcg = |s: &mut u64| {
             *s = s
                 .wrapping_mul(6364136223846793005)
                 .wrapping_add(1442695040888963407);
@@ -1533,7 +1533,7 @@ mod pmh_pathsum_tests {
 
     fn dense_gl_128(n: usize, seed: u64) -> Vec<u128> {
         let mut rng = seed;
-        let mut lcg = |s: &mut u64| {
+        let lcg = |s: &mut u64| {
             *s = s
                 .wrapping_mul(6364136223846793005)
                 .wrapping_add(1442695040888963407);
@@ -1569,7 +1569,7 @@ mod pmh_pathsum_tests {
 
     fn permutation_gl_64(n: usize, seed: u64) -> Vec<u64> {
         let mut rng = seed;
-        let mut lcg = |s: &mut u64| {
+        let lcg = |s: &mut u64| {
             *s = s
                 .wrapping_mul(6364136223846793005)
                 .wrapping_add(1442695040888963407);
@@ -1588,7 +1588,7 @@ mod pmh_pathsum_tests {
         if matrix == id.as_slice() {
             let ps = pathsum_from_matrix_64(matrix, n);
             assert_eq!(
-                synthesize_pmh_logic_64(ps, 1_000),
+                synthesize_pmh_logic_64(ps, i64::MAX),
                 "None",
                 "{label}: identity PathSum must be refused"
             );
@@ -1620,7 +1620,7 @@ mod pmh_pathsum_tests {
 
         let src = pathsum_from_matrix_64(matrix, n);
         let fp = state_fingerprint_logic_64(src.clone());
-        let out = synthesize_pmh_logic_64(src.clone(), 1_000);
+        let out = synthesize_pmh_logic_64(src.clone(), i64::MAX);
         assert_ne!(out, "None", "{label}: PathSum PMH refused a non-identity linear state");
         let replayed = replay_pmh_64(&out, n as i64);
         assert_eq!(
@@ -1661,7 +1661,7 @@ mod pmh_pathsum_tests {
 
         let src = pathsum_from_matrix_128(matrix, n);
         let fp = state_fingerprint_logic_128(src.clone());
-        let out = synthesize_pmh_logic_128(src.clone(), 1_000);
+        let out = synthesize_pmh_logic_128(src.clone(), i64::MAX);
         assert_ne!(out, "None", "{label}: PathSum PMH 128 refused a linear state");
         let replayed = replay_pmh_128(&out, n as i64);
         assert_eq!(
@@ -1708,7 +1708,7 @@ mod pmh_pathsum_tests {
             let mut ps = apply_cnots_pathsum_64(&cnots, n as i64);
             ps = apply_gate_logic_64(ps, (k % n as u64) as i64, |st, q| st.apply_x(q));
             let fp = state_fingerprint_logic_64(ps.clone());
-            let out = synthesize_pmh_logic_64(ps.clone(), 1_000);
+            let out = synthesize_pmh_logic_64(ps.clone(), i64::MAX);
             assert_ne!(out, "None", "affine n=8 k={k} refused");
             assert!(
                 out.contains("x "),
