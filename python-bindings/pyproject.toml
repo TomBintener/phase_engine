@@ -1,0 +1,289 @@
+[build-system]
+requires = ["maturin>=1.7,<2.0"]
+build-backend = "maturin"
+
+[project]
+name = "egglog"
+description = "e-graphs in Python built around the the egglog rust library"
+readme = "README.md"
+dynamic = ["version"]
+license = { text = "MIT" }
+requires-python = ">=3.11"
+classifiers = [
+    "Environment :: MacOS X",
+    "Environment :: Win32 (MS Windows)",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Natural Language :: English",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Rust",
+    "Programming Language :: Python :: Implementation :: CPython",
+    "Programming Language :: Python :: Implementation :: PyPy",
+    "Topic :: Software Development :: Compilers",
+    "Topic :: Software Development :: Interpreters",
+    "Typing :: Typed",
+]
+dependencies = ["typing-extensions", "black", "graphviz", "anywidget", "cloudpickle>=3", "opentelemetry-api"]
+
+[project.optional-dependencies]
+
+array = [
+    "scikit-learn",
+    "array_api_compat",
+    "numba>=0.59.1",
+    "llvmlite>=0.42.0",
+    "numpy>2"
+]
+dev = [
+    "ruff",
+    "pre-commit",
+    "mypy",
+    "anywidget[dev]",
+    "egglog[docs,test]",
+    "jupyterlab",
+    "ipykernel",
+]
+
+test = [
+    "pytest",
+    "mypy",
+    "syrupy>=5",
+    "egglog[array]",
+    "opentelemetry-sdk",
+    "opentelemetry-exporter-otlp-proto-http",
+    "pytest-codspeed",
+    "pytest-benchmark",
+    "pytest-xdist"
+]
+
+docs = [
+    "pydata-sphinx-theme",
+    "myst-nb",
+    "sphinx-autodoc-typehints",
+    "sphinx-gallery",
+    "nbconvert",
+    "matplotlib",
+    "anywidget",
+    "seaborn",
+    "egglog[array]",
+    "line-profiler",
+    "sphinxcontrib-mermaid",
+    "ablog",
+    "jupytext",
+]
+
+
+[tool.ruff.lint]
+ignore = [
+    # Allow uppercase vars
+    "N806",
+    "N802",
+    # Allow subprocess run
+    "S603",
+    # ALlow any
+    "ANN401",
+    # Allow exec
+    "S102",
+    "S307",
+    "S307",
+    # allow star imports
+    "F405",
+    "F403",
+    # allow shadow builtin import
+    "A004",
+    # Allow single line docstrings on multiple lines
+    "D200",
+    "D212",
+    # Allow shadoing builtins
+    "A003",
+    "A002",
+    # Allow Unused args
+    "ARG001",
+    "ARG002",
+    # Allow TODOs
+    "TD002",
+    "TD003",
+    "FIX002",
+    # Allow commented out code
+    "ARG001",
+    "ERA001",
+    # Allow boolean positional args
+    "FBT003",
+    "FBT002",
+    "FBT001",
+    # Allow creating types in function arg defaults
+    "B008",
+    # Allow no type annotations for private functions
+    "ANN202",
+    # Allow short var names
+    "E741",
+    # Allow docstring to not end with period
+    "D400",
+    "D415",
+    # Allow asserts
+    "S101",
+    # Allow try except in loop
+    "PERF203",
+    # Allow unused args
+    "ARG003",
+    # Allow no type annotation for kwargs
+    "ANN003",
+    # And for args
+    "ANN002",
+    # Allow globals
+    "PLW0603",
+    # Allow lots of statements
+    "PLR0915",
+    # Allow print
+    "T201",
+    # Allow constants
+    "PLR2004",
+    # Allow missing type annotations
+    "ANN001",
+    # allow missing return types
+    "ANN201",
+    # Allow uppercase args
+    "N803",
+    # Allow future anywhere in file
+    "F404",
+    # allow imports anywhere in cell
+    "E402",
+    # Alllow open()
+    "PTH123",
+
+    # Inconsistant formatting
+    "D203",
+    "COM812",
+    "COM819",
+    "E501",
+    "ISC001",
+    "Q001",
+    "Q002",
+    "Q003",
+    "W191",
+    "Q000",
+    "D206",
+    # Allow shadowing builtin
+    "A001",
+    # Allow unused lambda vars
+    "ARG005",
+    # Allow no space after first line of docstring
+    "D205",
+    # Allow "useless expressions" as they show up in examples
+    "B018",
+    # TODO: Remove the rest of these eventually
+    # Allow public methods to not have docstrings
+    "D102",
+    # Allow longer messages for custom errors
+    "TRY003",
+    # Allow f-string in exceptions
+    "EM102",
+    # No docstrings for public module
+    "D100",
+    # docstring public class
+    "D101",
+    # Docstring init
+    "D107",
+    # Docstring public function
+    "D103",
+    # docstring magic method
+    "D105",
+    # Allow lots of args for functions
+    "PLR0913",
+    # Allow non imperative docstrings
+    "D401",
+    # Allow private member refs
+    "SLF001",
+    # allow blind exception to add context
+    "BLE001",
+    # Don't move type checking around so that can be accessed at runtime
+    "TC001",
+    "TC002",
+    "TC003",
+    # allow eq without hash
+    "PLW1641",
+    # allow non module file for docs
+    "INP001",
+    # don't replace lambdas with functions because we need them to defer resolution
+    "PLW0108",
+]
+select = ["ALL"]
+
+[tool.ruff]
+
+line-length = 120
+# Allow lines to be as long as 120.
+src = ["python"]
+extend-exclude = ["python/tests/__snapshots__"]
+unsafe-fixes = true
+
+
+[tool.ruff.format]
+preview = true
+
+[tool.ruff.lint.per-file-ignores]
+# Don't require annotations for tests
+"python/tests/**" = ["ANN001", "ANN201", "INP001"]
+"docs/**" = ["I001", "PLW0131"]
+
+# Disable these tests instead for now since ruff doesn't support including all method annotations of decorated class
+# [tool.ruff.lint.flake8-type-checking]
+# runtime-evaluated-decorators = [
+#     "egglog.function",
+#     "egglog.method",
+#     "egglog.ruleset",
+# ]
+# runtime-evaluated-base-classes = ["egglog.Expr"]
+
+[tool.mypy]
+ignore_missing_imports = true
+allow_redefinition = true
+exclude = ["__snapshots__", "_build", "^conftest.py$"]
+warn_unused_configs = true
+disallow_subclassing_any = true
+check_untyped_defs = true
+warn_redundant_casts = true
+warn_unused_ignores = true
+strict_equality = true
+extra_checks = true
+strict_equality_for_none = true
+
+[tool.maturin]
+python-source = "python"
+module-name = "egglog.bindings"
+features = ["pyo3/extension-module"]
+
+[tool.pytest.ini_options]
+addopts = ["--import-mode=importlib", "--doctest-modules"]
+testpaths = ["python"]
+python_files = ["test_*.py", "test.py"]
+markers = ["slow: marks tests as slow (deselect with '-m \"not slow\"')"]
+norecursedirs = ["__snapshots__"]
+filterwarnings = [
+    "ignore::numba.core.errors.NumbaPerformanceWarning",
+    "ignore::pytest_benchmark.logger.PytestBenchmarkWarning",
+    # https://github.com/manzt/anywidget/blob/d38bb3f5f9cfc7e49e2ff1aa1ba994d66327cb02/pyproject.toml#L120
+    "ignore:Deprecated in traitlets 4.1, use the instance .metadata:DeprecationWarning",
+]
+
+[tool.coverage.report]
+exclude_also = [
+    "def __repr__",
+    "raise NotImplementedError",
+    "if TYPE_CHECKING:",
+    "class .*\\bProtocol\\):",
+    "@(abc\\.)?abstractmethod",
+    "assert_never\\(",
+]
+
+[tool.uv.workspace]
+members = ["egglog"]
+
+[dependency-groups]
+dev = [
+    "py-spy>=0.4.1",
+    "sympy>=1.14.0",
+]

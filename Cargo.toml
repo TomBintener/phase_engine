@@ -10,6 +10,8 @@ members = [
   "src/sort/add_primitive",
   "wasm-example"
 ]
+# Nested maturin/cdylib project; AGES installs it via pip subdirectory=.
+exclude = ["python-bindings"]
 
 [workspace.package]
 version = "2.0.0"
