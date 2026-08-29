@@ -18,6 +18,11 @@
 //! after applying the gate. This enforces that the path sum is maintained in its
 //! canonical form at all times within the e-graph, which is necessary for
 //! the engine to correctly identify equivalent operators.
+//!
+//! # Linear reversible synthesis
+//! `rust_synthesize_pmh_*` calls `synthesize_cnot_matrix` on the matching
+//! width: Patel–Markov–Hayes sectioned elimination (quant-ph/0302002), with
+//! Gauss–Jordan as a fallback. Gray/Steiner residuals use the same helper.
 
 use crate::engine::{engine_64, engine_128};
 use crate::prelude::BaseSort;
@@ -682,10 +687,10 @@ pub fn synthesize_steiner_logic_128(state: PSum128, gate_count: i64, hw_cost: i6
     
     let mut matrix = Vec::with_capacity(state.num_qubits as usize);
     for i in 0..state.num_qubits as usize {
-        matrix.push(state.out_state[i].variable_mask as u64);
+        matrix.push(state.out_state[i].variable_mask);
     }
     
-    if let Ok(cnots) = crate::engine::engine_64::synthesize_cnot_matrix(matrix, state.num_qubits as usize) {
+    if let Ok(cnots) = crate::engine::engine_128::synthesize_cnot_matrix(matrix, state.num_qubits as usize) {
         let mut final_cnots = Vec::new();
         for (c, t) in cnots {
             crate::engine::engine_128::apply_remote_cnot(c, t, &topo, &mut final_cnots);
@@ -818,10 +823,10 @@ pub fn synthesize_pmh_logic_128(state: PSum128, gate_count: i64) -> String {
     // 4. PMH Synthesis
     let mut matrix = Vec::with_capacity(state.num_qubits as usize);
     for i in 0..state.num_qubits as usize {
-        matrix.push(state.out_state[i].variable_mask as u64); // PMH synthesizer takes u64 since it is capped at 64 anyway!
+        matrix.push(state.out_state[i].variable_mask);
     }
     
-    if let Ok(cnots) = crate::engine::engine_64::synthesize_cnot_matrix(matrix, state.num_qubits as usize) {
+    if let Ok(cnots) = crate::engine::engine_128::synthesize_cnot_matrix(matrix, state.num_qubits as usize) {
         let mut instructions: Vec<String> = cnots
             .iter()
             .map(|&(c, t)| format!("cx {},{}", c, t))
@@ -1194,6 +1199,112 @@ mod gray_tests {
             state_fingerprint_logic_64(replay(&steiner, 3)),
             fp_orig,
             "steiner replay drifted (instructions: {steiner})"
+        );
+    }
+}
+
+#[cfg(test)]
+mod pmh_pathsum_tests {
+    use super::*;
+
+    fn replay_pmh_64(instructions: &str, n: i64) -> PSum64 {
+        if instructions == "empty" {
+            return id_pathsum_logic_64(n);
+        }
+        let mut ps = id_pathsum_logic_64(n);
+        for instr in instructions.split(';') {
+            let instr = instr.trim();
+            if instr.is_empty() {
+                continue;
+            }
+            if let Some(args) = instr.strip_prefix("cx ") {
+                let parts: Vec<i64> = args.split(',').map(|v| v.trim().parse().unwrap()).collect();
+                ps = apply_cx_logic_64(ps, parts[0], parts[1]);
+            } else if let Some(args) = instr.strip_prefix("x ") {
+                let q: i64 = args.trim().parse().unwrap();
+                ps = apply_gate_logic_64(ps, q, |st, q| st.apply_x(q));
+            } else {
+                let parts: Vec<i64> = instr.split(',').map(|v| v.trim().parse().unwrap()).collect();
+                ps = apply_cx_logic_64(ps, parts[0], parts[1]);
+            }
+        }
+        ps
+    }
+
+    fn replay_pmh_128(instructions: &str, n: i64) -> PSum128 {
+        if instructions == "empty" {
+            return id_pathsum_logic_128(n);
+        }
+        let mut ps = id_pathsum_logic_128(n);
+        for instr in instructions.split(';') {
+            let instr = instr.trim();
+            if instr.is_empty() {
+                continue;
+            }
+            if let Some(args) = instr.strip_prefix("cx ") {
+                let parts: Vec<i64> = args.split(',').map(|v| v.trim().parse().unwrap()).collect();
+                ps = apply_cx_logic_128(ps, parts[0], parts[1]);
+            } else if let Some(args) = instr.strip_prefix("x ") {
+                let q: i64 = args.trim().parse().unwrap();
+                ps = apply_gate_logic_128(ps, q, |st, q| st.apply_x(q));
+            } else {
+                let parts: Vec<i64> = instr.split(',').map(|v| v.trim().parse().unwrap()).collect();
+                ps = apply_cx_logic_128(ps, parts[0], parts[1]);
+            }
+        }
+        ps
+    }
+
+    #[test]
+    fn rejects_identity_and_tiny_count() {
+        let id = id_pathsum_logic_64(3);
+        assert_eq!(synthesize_pmh_logic_64(id.clone(), 8), "None");
+        let mut ps = id_pathsum_logic_64(2);
+        ps = apply_cx_logic_64(ps, 0, 1);
+        assert_eq!(synthesize_pmh_logic_64(ps, 2), "None");
+    }
+
+    #[test]
+    fn rejects_phase_and_path_vars() {
+        let mut phase = id_pathsum_logic_64(2);
+        phase = apply_gate_logic_64(phase, 0, |st, q| st.apply_z(q));
+        assert_eq!(synthesize_pmh_logic_64(phase, 8), "None");
+
+        let mut h = id_pathsum_logic_64(2);
+        h = apply_gate_logic_64(h, 0, |st, q| st.apply_h(q));
+        h = apply_cx_logic_64(h, 0, 1);
+        assert_eq!(synthesize_pmh_logic_64(h, 8), "None");
+    }
+
+    #[test]
+    fn cx_ladder_round_trips() {
+        let mut ps = id_pathsum_logic_64(3);
+        ps = apply_cx_logic_64(ps, 0, 1);
+        ps = apply_cx_logic_64(ps, 1, 2);
+        ps = apply_cx_logic_64(ps, 2, 0);
+        let fp = state_fingerprint_logic_64(ps.clone());
+        let out = synthesize_pmh_logic_64(ps, 1_000);
+        assert_ne!(out, "None", "pmh refused a linear CX block");
+        assert_eq!(
+            state_fingerprint_logic_64(replay_pmh_64(&out, 3)),
+            fp,
+            "pmh replay drifted (instructions: {out})"
+        );
+    }
+
+    #[test]
+    fn wide_n70_pathsum_round_trips() {
+        let mut ps = id_pathsum_logic_128(70);
+        ps = apply_cx_logic_128(ps, 0, 65);
+        ps = apply_cx_logic_128(ps, 65, 69);
+        ps = apply_cx_logic_128(ps, 69, 0);
+        let fp = state_fingerprint_logic_128(ps.clone());
+        let out = synthesize_pmh_logic_128(ps, 1_000);
+        assert_ne!(out, "None", "pmh 128 refused a high-wire linear block");
+        assert_eq!(
+            state_fingerprint_logic_128(replay_pmh_128(&out, 70)),
+            fp,
+            "pmh 128 replay drifted (instructions: {out})"
         );
     }
 }

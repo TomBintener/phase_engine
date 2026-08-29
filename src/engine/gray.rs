@@ -76,8 +76,8 @@ macro_rules! define_gray_logic {
         /// and its target linear reversible function (`target[i]` = XOR mask
         /// of input variables on output wire `i`), emits a circuit computing
         /// every parity exactly once (each rotation applied where the wire
-        /// already holds the parity) followed by a Gauss-Jordan fix-up to the
-        /// target linear function.
+        /// already holds the parity) followed by a linear residual fix-up
+        /// (`synthesize_cnot_matrix`) to the target linear function.
         ///
         /// Unlike the Steiner synthesizer this shares parity prefixes across
         /// terms: consecutive (Gray-ordered) parities are reached by XOR-ing
@@ -197,8 +197,7 @@ macro_rules! define_gray_logic {
                 if combo == 0 {
                     return None;
                 }
-                let members: Vec<usize> =
-                    (0..n).filter(|&i| (combo >> i) & 1 == 1).collect();
+                let members: Vec<usize> = (0..n).filter(|&i| (combo >> i) & 1 == 1).collect();
                 // Target choice: the member whose row has the largest overlap
                 // with the parity (fewest live bits destroyed elsewhere is a
                 // wash on all-to-all; overlap keeps rows close to parities
@@ -219,7 +218,7 @@ macro_rules! define_gray_logic {
             }
 
             // Residual linear fix-up: express the target rows in the current
-            // wire basis and synthesize that matrix with Gauss-Jordan.
+            // wire basis and synthesize that matrix via synthesize_cnot_matrix.
             let mut residual: Vec<$primitive> = Vec::with_capacity(n);
             for q in 0..n {
                 let combo = solve(&rows, target[q])?;
