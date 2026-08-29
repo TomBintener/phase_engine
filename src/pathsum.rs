@@ -14,10 +14,11 @@
 //! rather than crashing the Rust runtime.
 //!
 //! # Eager Reduction
-//! Every gate application logic function eagerly calls `reduce()` on the state
-//! after applying the gate. This enforces that the path sum is maintained in its
-//! canonical form at all times within the e-graph, which is necessary for
-//! the engine to correctly identify equivalent operators.
+//! Phase-bearing wrappers (`apply_gate_logic_*`, `apply_rz_logic_*`) call
+//! `reduce()` after the apply so the interned value is canonical. `x` and `cx`
+//! skip `reduce()`: `apply_gate_no_reduce_logic_*` / `apply_cx_logic_*` are
+//! affine / linear XOR updates and do not allocate path variables. See
+//! `PATHSUM.md`.
 
 use crate::engine::{engine_64, engine_128};
 use crate::prelude::BaseSort;
@@ -922,7 +923,7 @@ impl BaseSort for PathSumSort128 {
 /// every `EvaluatedPathSum` field, i.e. exactly the fields `PartialEq`
 /// compares. Two states are engine-equal iff their fingerprints match, which
 /// gives host-side passes the same trust base as `state_union`
-/// (`debug_pathsum` is NOT sufficient: it omits `out_state` and the masks).
+/// (`debug_pathsum` is NOT sufficient: it omits `out_state`).
 pub fn state_fingerprint_logic_64(state: PSum64) -> String {
     // Arc's Debug delegates to the inner EvaluatedPathSum.
     format!("{:?}", state.into_inner())

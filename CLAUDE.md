@@ -5,7 +5,8 @@ egglog is a unified tool for program optimization and program analysis
 
 ## Project structure
 
-- The main `egglog` crate has the source code under `./src/` and is concerned with parsing, desugaring, proofs, type checking, and lowering.
+- The main `egglog` crate has the source code under `./src/` and is concerned with parsing, desugaring, proofs, type checking, and lowering. PathSum (AGES identity-operator engine) is `src/engine/` + `src/pathsum.rs`; contract: [PATHSUM.md](PATHSUM.md).
+- `python-bindings/` is the maturin `egglog` wheel AGES installs (`egglog = { path = ".." }`).
 - `core-relations` is the backing database implementation. It supports both parallel and serial modes. By default, it runs in serial mode and uses only a single thread.
 - `egglog-bridge` is the bridge between the main crate and the core-relations, and provides abstractions/utility for rules, union-find, rows, etc.
 - The `tests` folder contains a list of example egglog programs.
