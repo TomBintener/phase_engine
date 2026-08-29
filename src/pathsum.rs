@@ -1293,6 +1293,147 @@ mod pmh_pathsum_tests {
     }
 
     #[test]
+    fn extended_pathsum_random_cx_affine_and_compose() {
+        fn lcg(state: &mut u64) -> u64 {
+            *state = state
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            *state
+        }
+
+        fn random_cx_64(n: i64, n_ops: usize, seed: u64) -> PSum64 {
+            let mut rng = seed;
+            let mut ps = id_pathsum_logic_64(n);
+            for _ in 0..n_ops {
+                let c = (lcg(&mut rng) as i64).rem_euclid(n);
+                let t = (lcg(&mut rng) as i64).rem_euclid(n);
+                if c != t {
+                    ps = apply_cx_logic_64(ps, c, t);
+                }
+            }
+            ps
+        }
+
+        fn random_cx_128(n: i64, n_ops: usize, seed: u64) -> PSum128 {
+            let mut rng = seed;
+            let mut ps = id_pathsum_logic_128(n);
+            for _ in 0..n_ops {
+                let c = (lcg(&mut rng) as i64).rem_euclid(n);
+                let t = (lcg(&mut rng) as i64).rem_euclid(n);
+                if c != t {
+                    ps = apply_cx_logic_128(ps, c, t);
+                }
+            }
+            ps
+        }
+
+        let mut accepted = 0usize;
+        for n in [6i64, 8, 12, 16] {
+            for k in 0..32 {
+                let ps = random_cx_64(n, (n as usize) * 4, 0xF00D + (n as u64) * 97 + k);
+                let fp = state_fingerprint_logic_64(ps.clone());
+                let out = synthesize_pmh_logic_64(ps, 1_000);
+                if out == "None" {
+                    continue;
+                }
+                accepted += 1;
+                assert_eq!(
+                    state_fingerprint_logic_64(replay_pmh_64(&out, n)),
+                    fp,
+                    "64-bit random CX replay drifted n={n} k={k}: {out}"
+                );
+            }
+        }
+        assert!(
+            accepted >= 80,
+            "too few 64-bit random CX PathSums accepted ({accepted})"
+        );
+
+        let mut affine_ok = 0usize;
+        for k in 0..24 {
+            let mut rng = 0xAFFE + k;
+            let n = 8i64;
+            let mut ps = random_cx_64(n, 24, 0xA11E + k);
+            for _ in 0..3 {
+                let q = (lcg(&mut rng) as i64).rem_euclid(n);
+                ps = apply_gate_logic_64(ps, q, |st, q| st.apply_x(q));
+            }
+            let fp = state_fingerprint_logic_64(ps.clone());
+            let out = synthesize_pmh_logic_64(ps, 1_000);
+            if out == "None" {
+                continue;
+            }
+            affine_ok += 1;
+            assert!(
+                out.contains("x ") || out.contains("cx "),
+                "affine n=8 k={k} produced unexpected AST: {out}"
+            );
+            assert_eq!(
+                state_fingerprint_logic_64(replay_pmh_64(&out, n)),
+                fp,
+                "affine replay drifted k={k}: {out}"
+            );
+        }
+        assert!(
+            affine_ok >= 16,
+            "too few affine PathSums accepted ({affine_ok})"
+        );
+
+        for k in 0..16 {
+            let n = 8i64;
+            let a = random_cx_64(n, 16, 0xC0DE + k);
+            let b = random_cx_64(n, 16, 0xC0DF + k);
+            let out_a = synthesize_pmh_logic_64(a, 1_000);
+            let out_b = synthesize_pmh_logic_64(b, 1_000);
+            if out_a == "None" || out_b == "None" {
+                continue;
+            }
+            let mut composed = replay_pmh_64(&out_a, n);
+            for instr in out_b.split(';') {
+                let instr = instr.trim();
+                if instr.is_empty() {
+                    continue;
+                }
+                if let Some(args) = instr.strip_prefix("cx ") {
+                    let parts: Vec<i64> =
+                        args.split(',').map(|v| v.trim().parse().unwrap()).collect();
+                    composed = apply_cx_logic_64(composed, parts[0], parts[1]);
+                } else {
+                    let parts: Vec<i64> =
+                        instr.split(',').map(|v| v.trim().parse().unwrap()).collect();
+                    composed = apply_cx_logic_64(composed, parts[0], parts[1]);
+                }
+            }
+            let fp = state_fingerprint_logic_64(composed.clone());
+            let out = synthesize_pmh_logic_64(composed, 1_000);
+            if out == "None" {
+                continue;
+            }
+            assert_eq!(
+                state_fingerprint_logic_64(replay_pmh_64(&out, n)),
+                fp,
+                "composed PathSum replay drifted k={k}: {out}"
+            );
+        }
+
+        for &(n, samples, ops) in &[(40i64, 8, 80), (64, 4, 96)] {
+            for k in 0..samples {
+                let ps = random_cx_128(n, ops, 0x4040 + (n as u64) * 11 + k);
+                let fp = state_fingerprint_logic_128(ps.clone());
+                let out = synthesize_pmh_logic_128(ps, 1_000);
+                if out == "None" {
+                    continue;
+                }
+                assert_eq!(
+                    state_fingerprint_logic_128(replay_pmh_128(&out, n)),
+                    fp,
+                    "128-bit PathSum replay drifted n={n} k={k}: {out}"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn wide_n70_pathsum_round_trips() {
         let mut ps = id_pathsum_logic_128(70);
         ps = apply_cx_logic_128(ps, 0, 65);
