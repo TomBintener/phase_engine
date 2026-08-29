@@ -1450,6 +1450,293 @@ mod pmh_pathsum_tests {
         }
     }
 
+    /// Linear PathSum whose `out_state[i].variable_mask` is row `i` of `M`.
+    fn pathsum_from_matrix_64(matrix: &[u64], n: usize) -> PSum64 {
+        let mut st = engine_64::EvaluatedPathSum::new_id(n as u32);
+        for i in 0..n {
+            st.out_state[i] = engine_64::BooleanPoly::from_mask(matrix[i]);
+        }
+        PSum64::new(Arc::new(st))
+    }
+
+    fn pathsum_from_matrix_128(matrix: &[u128], n: usize) -> PSum128 {
+        let mut st = engine_128::EvaluatedPathSum::new_id(n as u32);
+        for i in 0..n {
+            st.out_state[i] = engine_128::BooleanPoly::from_mask(matrix[i]);
+        }
+        PSum128::new(Arc::new(st))
+    }
+
+    fn apply_cnots_pathsum_64(cnots: &[(usize, usize)], n: i64) -> PSum64 {
+        let mut ps = id_pathsum_logic_64(n);
+        for &(c, t) in cnots {
+            ps = apply_cx_logic_64(ps, c as i64, t as i64);
+        }
+        ps
+    }
+
+    fn apply_cnots_pathsum_128(cnots: &[(usize, usize)], n: i64) -> PSum128 {
+        let mut ps = id_pathsum_logic_128(n);
+        for &(c, t) in cnots {
+            ps = apply_cx_logic_128(ps, c as i64, t as i64);
+        }
+        ps
+    }
+
+    fn masks_64(ps: &PSum64) -> Vec<u64> {
+        (0..ps.num_qubits as usize)
+            .map(|i| ps.out_state[i].variable_mask)
+            .collect()
+    }
+
+    fn masks_128(ps: &PSum128) -> Vec<u128> {
+        (0..ps.num_qubits as usize)
+            .map(|i| ps.out_state[i].variable_mask)
+            .collect()
+    }
+
+    fn dense_gl_64(n: usize, seed: u64) -> Vec<u64> {
+        let mut rng = seed;
+        let mut lcg = |s: &mut u64| {
+            *s = s
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            *s
+        };
+        let mut rand_bit = || lcg(&mut rng) & 1 == 1;
+        let mut l = vec![0u64; n];
+        let mut u = vec![0u64; n];
+        for i in 0..n {
+            l[i] |= 1u64 << i;
+            u[i] |= 1u64 << i;
+            for j in 0..i {
+                if rand_bit() {
+                    l[i] |= 1u64 << j;
+                }
+            }
+            for j in (i + 1)..n {
+                if rand_bit() {
+                    u[i] |= 1u64 << j;
+                }
+            }
+        }
+        let mut m = vec![0u64; n];
+        for i in 0..n {
+            for j in 0..n {
+                if ((l[i] >> j) & 1) == 1 {
+                    m[i] ^= u[j];
+                }
+            }
+        }
+        m
+    }
+
+    fn dense_gl_128(n: usize, seed: u64) -> Vec<u128> {
+        let mut rng = seed;
+        let mut lcg = |s: &mut u64| {
+            *s = s
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            *s
+        };
+        let mut rand_bit = || lcg(&mut rng) & 1 == 1;
+        let mut l = vec![0u128; n];
+        let mut u = vec![0u128; n];
+        for i in 0..n {
+            l[i] |= 1u128 << i;
+            u[i] |= 1u128 << i;
+            for j in 0..i {
+                if rand_bit() {
+                    l[i] |= 1u128 << j;
+                }
+            }
+            for j in (i + 1)..n {
+                if rand_bit() {
+                    u[i] |= 1u128 << j;
+                }
+            }
+        }
+        let mut m = vec![0u128; n];
+        for i in 0..n {
+            for j in 0..n {
+                if ((l[i] >> j) & 1) == 1 {
+                    m[i] ^= u[j];
+                }
+            }
+        }
+        m
+    }
+
+    fn permutation_gl_64(n: usize, seed: u64) -> Vec<u64> {
+        let mut rng = seed;
+        let mut lcg = |s: &mut u64| {
+            *s = s
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            *s
+        };
+        let mut perm: Vec<usize> = (0..n).collect();
+        for i in (1..n).rev() {
+            let j = (lcg(&mut rng) as usize) % (i + 1);
+            perm.swap(i, j);
+        }
+        perm.into_iter().map(|src| 1u64 << src).collect()
+    }
+
+    fn assert_matrix_pathsum_eq_64(matrix: &[u64], n: usize, label: &str) {
+        let id: Vec<u64> = (0..n).map(|i| 1u64 << i).collect();
+        if matrix == id.as_slice() {
+            let ps = pathsum_from_matrix_64(matrix, n);
+            assert_eq!(
+                synthesize_pmh_logic_64(ps, 1_000),
+                "None",
+                "{label}: identity PathSum must be refused"
+            );
+            return;
+        }
+
+        let cnots = engine_64::synthesize_cnot_matrix(matrix.to_vec(), n)
+            .unwrap_or_else(|e| panic!("{label}: matrix PMH failed: {e}"));
+        assert_eq!(
+            engine_64::apply_cnots_to_identity(&cnots, n),
+            matrix,
+            "{label}: CX list does not implement M"
+        );
+
+        let from_mask = pathsum_from_matrix_64(matrix, n);
+        assert_eq!(masks_64(&from_mask), matrix, "{label}: from_mask drifted from M");
+
+        let from_tape = apply_cnots_pathsum_64(&cnots, n as i64);
+        assert_eq!(
+            masks_64(&from_tape),
+            matrix,
+            "{label}: PathSum tape masks drifted from M"
+        );
+        assert_eq!(
+            from_mask.into_inner(),
+            from_tape.into_inner(),
+            "{label}: mask-built PathSum is not Eq to tape-built PathSum"
+        );
+
+        let src = pathsum_from_matrix_64(matrix, n);
+        let fp = state_fingerprint_logic_64(src.clone());
+        let out = synthesize_pmh_logic_64(src.clone(), 1_000);
+        assert_ne!(out, "None", "{label}: PathSum PMH refused a non-identity linear state");
+        let replayed = replay_pmh_64(&out, n as i64);
+        assert_eq!(
+            state_fingerprint_logic_64(replayed.clone()),
+            fp,
+            "{label}: PathSum fingerprint drifted (instructions: {out})"
+        );
+        assert_eq!(
+            src.into_inner(),
+            replayed.into_inner(),
+            "{label}: PathSum PartialEq failed (the state_union trust base)"
+        );
+        let replayed = replay_pmh_64(&out, n as i64);
+        assert_eq!(
+            masks_64(&replayed),
+            matrix,
+            "{label}: replayed PathSum masks drifted from M"
+        );
+    }
+
+    fn assert_matrix_pathsum_eq_128(matrix: &[u128], n: usize, label: &str) {
+        let cnots = engine_128::synthesize_cnot_matrix(matrix.to_vec(), n)
+            .unwrap_or_else(|e| panic!("{label}: matrix PMH failed: {e}"));
+        assert_eq!(
+            engine_128::apply_cnots_to_identity(&cnots, n),
+            matrix,
+            "{label}: CX list does not implement M"
+        );
+
+        let from_mask = pathsum_from_matrix_128(matrix, n);
+        assert_eq!(masks_128(&from_mask), matrix, "{label}: from_mask drifted from M");
+        let from_tape = apply_cnots_pathsum_128(&cnots, n as i64);
+        assert_eq!(
+            from_mask.into_inner(),
+            from_tape.into_inner(),
+            "{label}: mask-built PathSum is not Eq to tape-built PathSum"
+        );
+
+        let src = pathsum_from_matrix_128(matrix, n);
+        let fp = state_fingerprint_logic_128(src.clone());
+        let out = synthesize_pmh_logic_128(src.clone(), 1_000);
+        assert_ne!(out, "None", "{label}: PathSum PMH 128 refused a linear state");
+        let replayed = replay_pmh_128(&out, n as i64);
+        assert_eq!(
+            state_fingerprint_logic_128(replayed.clone()),
+            fp,
+            "{label}: 128-bit fingerprint drifted (instructions: {out})"
+        );
+        assert_eq!(
+            src.into_inner(),
+            replayed.into_inner(),
+            "{label}: 128-bit PathSum PartialEq failed"
+        );
+        let replayed = replay_pmh_128(&out, n as i64);
+        assert_eq!(
+            masks_128(&replayed),
+            matrix,
+            "{label}: replayed 128-bit masks drifted from M"
+        );
+    }
+
+    #[test]
+    fn matrix_suites_merge_with_pathsum_eq() {
+        // The matrix suites only checked "CX list implements M". This takes
+        // those same ensembles through PathSum: mask-built state Eq tape-built
+        // state, and synthesize_pmh replay is PartialEq (the state_union base).
+        for &(n, samples) in &[(8usize, 64), (12, 64), (16, 64), (20, 32), (24, 32)] {
+            for k in 0..samples {
+                let m = dense_gl_64(n, 0xE7E7 + (n as u64) * 100_003 + k);
+                assert_matrix_pathsum_eq_64(&m, n, &format!("dense n={n} k={k}"));
+            }
+        }
+
+        for n in [8usize, 12, 16] {
+            for k in 0..16 {
+                let m = permutation_gl_64(n, 0xA0A0 + (n as u64) * 31 + k);
+                assert_matrix_pathsum_eq_64(&m, n, &format!("perm n={n} k={k}"));
+            }
+        }
+
+        for k in 0..24 {
+            let n = 8usize;
+            let m = dense_gl_64(n, 0xA11E + k);
+            let cnots = engine_64::synthesize_cnot_matrix(m.clone(), n).unwrap();
+            let mut ps = apply_cnots_pathsum_64(&cnots, n as i64);
+            ps = apply_gate_logic_64(ps, (k % n as u64) as i64, |st, q| st.apply_x(q));
+            let fp = state_fingerprint_logic_64(ps.clone());
+            let out = synthesize_pmh_logic_64(ps.clone(), 1_000);
+            assert_ne!(out, "None", "affine n=8 k={k} refused");
+            assert!(
+                out.contains("x "),
+                "affine n=8 k={k} missing trailing X: {out}"
+            );
+            let replayed = replay_pmh_64(&out, n as i64);
+            assert_eq!(
+                state_fingerprint_logic_64(replayed.clone()),
+                fp,
+                "affine fingerprint drifted k={k}: {out}"
+            );
+            assert_eq!(
+                ps.into_inner(),
+                replayed.into_inner(),
+                "affine PathSum PartialEq failed k={k}"
+            );
+            let replayed = replay_pmh_64(&out, n as i64);
+            assert_eq!(masks_64(&replayed), m, "affine linear masks drifted k={k}");
+        }
+
+        for &(n, samples) in &[(16usize, 16), (40, 8), (70, 4)] {
+            for k in 0..samples {
+                let m = dense_gl_128(n, 0x7070 + (n as u64) * 1009 + k);
+                assert_matrix_pathsum_eq_128(&m, n, &format!("dense128 n={n} k={k}"));
+            }
+        }
+    }
+
     #[test]
     fn wide_n70_pathsum_round_trips() {
         let mut ps = id_pathsum_logic_128(70);
