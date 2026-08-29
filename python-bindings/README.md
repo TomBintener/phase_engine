@@ -6,7 +6,7 @@ on the parent `phase_engine` crate (I_n-only PathSum).
 AGES installs this directory with:
 
 ```
-egglog @ git+https://github.com/TomBintener/phase_engine.git@<ref>#subdirectory=python-bindings
+egglog @ git+https://github.com/TomBintener/phase_engine.git@main#subdirectory=python-bindings
 ```
 
 Local:
