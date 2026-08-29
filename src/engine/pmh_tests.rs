@@ -364,7 +364,7 @@ fn pre_merge_inverse_section_and_ensemble_suite() {
             let inv = invert_cnots(&pmh);
             let recovered = engine_64::apply_cnots_to_identity(&inv, n);
             let product = mul_f2_64(&m, &recovered, n);
-            assert_eq!(product, id, "n={n} k={k}: M * M^{-1} != I");
+            assert_eq!(product, id, "n={n} k={k}: M * M^{{-1}} != I");
             let undone = {
                 let mut work = m.clone();
                 for &(c, t) in &inv {
