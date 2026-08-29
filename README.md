@@ -1,5 +1,19 @@
 # egglog: The Next-Generation Equality Saturation Engine
 
+**This fork** is [`TomBintener/phase_engine`](https://github.com/TomBintener/phase_engine).
+Cargo package name is still `egglog`. PathSum (identity operator \(I_n\), no ket
+masks) lives in `src/engine/` and `src/pathsum.rs`. The contract with citations
+is [PATHSUM.md](PATHSUM.md). AGES installs the in-tree Python bindings:
+
+```
+egglog @ git+https://github.com/TomBintener/phase_engine.git@main#subdirectory=python-bindings
+```
+
+(`python-bindings/Cargo.toml` path-depends `egglog = { path = ".." }`). The rest
+of this README is upstream egglog and does **not** document PathSum.
+
+---
+
 <a href="https://egraphs-good.github.io/egglog/">
     <img alt="Web Demo" src="https://img.shields.io/badge/-web demo-blue"></a>
 <a href="https://egraphs-good.github.io/egglog/docs/egglog">
