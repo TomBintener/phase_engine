@@ -1301,15 +1301,26 @@ mod pmh_pathsum_tests {
             *state
         }
 
+        // High bits: LCG low bits have period 2^k, so `% 2^k` can emit a
+        // repeating self-inverse CX pair and leave the state at I_n.
+        fn rand_qubit(rng: &mut u64, n: i64) -> i64 {
+            ((lcg(rng) >> 32) as i64).rem_euclid(n)
+        }
+
         fn random_cx_64(n: i64, n_ops: usize, seed: u64) -> PSum64 {
             let mut rng = seed;
             let mut ps = id_pathsum_logic_64(n);
             for _ in 0..n_ops {
-                let c = (lcg(&mut rng) as i64).rem_euclid(n);
-                let t = (lcg(&mut rng) as i64).rem_euclid(n);
+                let c = rand_qubit(&mut rng, n);
+                let t = rand_qubit(&mut rng, n);
                 if c != t {
                     ps = apply_cx_logic_64(ps, c, t);
                 }
+            }
+            if state_fingerprint_logic_64(ps.clone())
+                == state_fingerprint_logic_64(id_pathsum_logic_64(n))
+            {
+                ps = apply_cx_logic_64(ps, 0, 1.min(n - 1));
             }
             ps
         }
@@ -1318,36 +1329,44 @@ mod pmh_pathsum_tests {
             let mut rng = seed;
             let mut ps = id_pathsum_logic_128(n);
             for _ in 0..n_ops {
-                let c = (lcg(&mut rng) as i64).rem_euclid(n);
-                let t = (lcg(&mut rng) as i64).rem_euclid(n);
+                let c = rand_qubit(&mut rng, n);
+                let t = rand_qubit(&mut rng, n);
                 if c != t {
                     ps = apply_cx_logic_128(ps, c, t);
                 }
+            }
+            if state_fingerprint_logic_128(ps.clone())
+                == state_fingerprint_logic_128(id_pathsum_logic_128(n))
+            {
+                ps = apply_cx_logic_128(ps, 0, 1.min(n - 1));
             }
             ps
         }
 
         let mut accepted = 0usize;
         for n in [6i64, 8, 12, 16] {
+            let id_fp = state_fingerprint_logic_64(id_pathsum_logic_64(n));
+            let mut n_accepted = 0usize;
             for k in 0..32 {
                 let ps = random_cx_64(n, (n as usize) * 4, 0xF00D + (n as u64) * 97 + k);
                 let fp = state_fingerprint_logic_64(ps.clone());
+                assert_ne!(fp, id_fp, "random CX product was identity n={n} k={k}");
                 let out = synthesize_pmh_logic_64(ps, 1_000);
-                if out == "None" {
-                    continue;
-                }
+                assert_ne!(
+                    out, "None",
+                    "PMH refused a non-identity linear CX product n={n} k={k}"
+                );
                 accepted += 1;
+                n_accepted += 1;
                 assert_eq!(
                     state_fingerprint_logic_64(replay_pmh_64(&out, n)),
                     fp,
                     "64-bit random CX replay drifted n={n} k={k}: {out}"
                 );
             }
+            eprintln!("pathsum random CX n={n}: accepted={n_accepted}/32");
         }
-        assert!(
-            accepted >= 80,
-            "too few 64-bit random CX PathSums accepted ({accepted})"
-        );
+        assert_eq!(accepted, 128);
 
         let mut affine_ok = 0usize;
         for k in 0..24 {
@@ -1355,17 +1374,15 @@ mod pmh_pathsum_tests {
             let n = 8i64;
             let mut ps = random_cx_64(n, 24, 0xA11E + k);
             for _ in 0..3 {
-                let q = (lcg(&mut rng) as i64).rem_euclid(n);
+                let q = rand_qubit(&mut rng, n);
                 ps = apply_gate_logic_64(ps, q, |st, q| st.apply_x(q));
             }
             let fp = state_fingerprint_logic_64(ps.clone());
             let out = synthesize_pmh_logic_64(ps, 1_000);
-            if out == "None" {
-                continue;
-            }
+            assert_ne!(out, "None", "PMH refused an affine CX+X state k={k}");
             affine_ok += 1;
             assert!(
-                out.contains("x ") || out.contains("cx "),
+                out.contains("x ") || out.contains("cx ") || out.contains(','),
                 "affine n=8 k={k} produced unexpected AST: {out}"
             );
             assert_eq!(
@@ -1374,10 +1391,7 @@ mod pmh_pathsum_tests {
                 "affine replay drifted k={k}: {out}"
             );
         }
-        assert!(
-            affine_ok >= 16,
-            "too few affine PathSums accepted ({affine_ok})"
-        );
+        assert_eq!(affine_ok, 24);
 
         for k in 0..16 {
             let n = 8i64;
@@ -1417,13 +1431,16 @@ mod pmh_pathsum_tests {
         }
 
         for &(n, samples, ops) in &[(40i64, 8, 80), (64, 4, 96)] {
+            let id_fp = state_fingerprint_logic_128(id_pathsum_logic_128(n));
             for k in 0..samples {
                 let ps = random_cx_128(n, ops, 0x4040 + (n as u64) * 11 + k);
                 let fp = state_fingerprint_logic_128(ps.clone());
+                assert_ne!(fp, id_fp, "128-bit random CX product was identity n={n} k={k}");
                 let out = synthesize_pmh_logic_128(ps, 1_000);
-                if out == "None" {
-                    continue;
-                }
+                assert_ne!(
+                    out, "None",
+                    "PMH 128 refused a non-identity linear block n={n} k={k}"
+                );
                 assert_eq!(
                     state_fingerprint_logic_128(replay_pmh_128(&out, n)),
                     fp,
