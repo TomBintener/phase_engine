@@ -19,13 +19,44 @@ macro_rules! define_continuous_poly_logic {
             pub phases: Vec<f64>,
         }
 
+        /// Fold a constant-1 ANF term (monomial 0) into a global phase and drop it.
+        /// `e^{iθ(1⊕p)} = e^{iθ} e^{-iθ p}`; interned Eq already ignores global phase.
+        fn canonicalize_continuous_parity(
+            parity: BooleanPoly,
+            theta: f64,
+        ) -> Option<(BooleanPoly, f64)> {
+            let mut normalized = snap_phase(theta.rem_euclid(TAU));
+            if normalized == 0.0 || normalized == snap_phase(TAU) {
+                return None;
+            }
+            if parity.terms.is_empty() {
+                return None;
+            }
+            if parity.terms.first().copied() != Some(0) {
+                return Some((parity, normalized));
+            }
+            normalized = snap_phase((-normalized).rem_euclid(TAU));
+            if normalized == 0.0 || normalized == snap_phase(TAU) {
+                return None;
+            }
+            let rest: SmallVec<[$primitive; $poly_capacity]> =
+                parity.terms.iter().copied().filter(|&t| t != 0).collect();
+            if rest.is_empty() {
+                return None;
+            }
+            Some((BooleanPoly::from_terms(rest), normalized))
+        }
+
         impl ContinuousPhasePoly {
             pub fn new() -> Self { Self::default() }
 
             pub fn apply_phase(&mut self, parity: BooleanPoly, theta: f64) {
-                let normalized_theta = snap_phase(theta.rem_euclid(TAU));
-                if normalized_theta == 0.0 || normalized_theta == snap_phase(TAU) { return; }
-                
+                let Some((parity, normalized_theta)) =
+                    canonicalize_continuous_parity(parity, theta)
+                else {
+                    return;
+                };
+
                 match self.parities.binary_search_by(|p| p.terms.cmp(&parity.terms)) {
                     Ok(idx) => {
                         let new_phase = snap_phase((self.phases[idx] + normalized_theta).rem_euclid(TAU));
@@ -45,20 +76,26 @@ macro_rules! define_continuous_poly_logic {
 
             pub fn compact(&mut self) {
                 if self.parities.is_empty() { return; }
-                let mut combined: Vec<_> = self.parities.drain(..).zip(self.phases.drain(..)).collect();
-                combined.sort_unstable_by(|a, b| a.0.terms.cmp(&b.0.terms));
-                
+                let combined: Vec<_> = self.parities.drain(..).zip(self.phases.drain(..)).collect();
+                let mut folded = Vec::with_capacity(combined.len());
+                for (parity, theta) in combined {
+                    if let Some(pair) = canonicalize_continuous_parity(parity, theta) {
+                        folded.push(pair);
+                    }
+                }
+                folded.sort_unstable_by(|a, b| a.0.terms.cmp(&b.0.terms));
+
                 let mut i = 0;
-                while i < combined.len() {
+                while i < folded.len() {
                     let mut j = i + 1;
-                    let mut accumulated_phase = combined[i].1;
-                    while j < combined.len() && combined[j].0.terms == combined[i].0.terms {
-                        accumulated_phase += combined[j].1;
+                    let mut accumulated_phase = folded[i].1;
+                    while j < folded.len() && folded[j].0.terms == folded[i].0.terms {
+                        accumulated_phase += folded[j].1;
                         j += 1;
                     }
                     let norm = snap_phase(accumulated_phase.rem_euclid(TAU));
                     if norm != 0.0 && norm != snap_phase(TAU) {
-                        self.parities.push(combined[i].0.clone());
+                        self.parities.push(folded[i].0.clone());
                         self.phases.push(norm);
                     }
                     i = j;

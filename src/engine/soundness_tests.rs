@@ -409,5 +409,154 @@ macro_rules! define_soundness_tests_logic {
             };
             assert_eq!(run(&gates), run(&gates));
         }
+
+        #[derive(Clone, Copy)]
+        enum HFreeGate {
+            X(usize),
+            Cx(usize, usize),
+            Rz(usize, f64),
+        }
+
+        fn push_x_right(gates: &[HFreeGate], n: usize) -> Vec<HFreeGate> {
+            let mut pending = vec![false; n];
+            let mut out = Vec::new();
+            for &g in gates {
+                match g {
+                    HFreeGate::X(q) => pending[q] ^= true,
+                    HFreeGate::Rz(q, theta) => {
+                        let t = if pending[q] { -theta } else { theta };
+                        out.push(HFreeGate::Rz(q, t));
+                    }
+                    HFreeGate::Cx(c, t) => {
+                        out.push(HFreeGate::Cx(c, t));
+                        if pending[c] {
+                            pending[t] ^= true;
+                        }
+                    }
+                }
+            }
+            for q in 0..n {
+                if pending[q] {
+                    out.push(HFreeGate::X(q));
+                }
+            }
+            out
+        }
+
+        fn apply_hfree_gates(
+            state: &mut EvaluatedPathSum,
+            sim: &mut DenseSim,
+            gates: &[HFreeGate],
+        ) {
+            for &g in gates {
+                match g {
+                    HFreeGate::X(q) => {
+                        state.apply_x(q);
+                        sim.x(q);
+                    }
+                    HFreeGate::Cx(c, t) => {
+                        state.apply_cx(c, t);
+                        sim.cx(c, t);
+                    }
+                    HFreeGate::Rz(q, theta) => {
+                        state.apply_rz(q, theta);
+                        sim.phase_gate(q, theta);
+                    }
+                }
+                state.reduce();
+            }
+        }
+
+        /// Completeness: commuting every X to the right of an H-free {X,CX,RZ}
+        /// circuit must leave interned PathSum Eq, matching the dense simulator.
+        #[test]
+        fn test_hfree_x_commutation_completeness() {
+            let mut case = 0u32;
+            for n in 1u32..=4 {
+                for seed in 0..200u64 {
+                    let mut rng = XorShift::new(
+                        0xC0FF_EE00_F00D_0000 ^ n as u64 ^ seed.wrapping_mul(0x9E37_79B9_7F4A_7C15),
+                    );
+                    let n_us = n as usize;
+                    let mut gates = Vec::with_capacity(12);
+                    for _ in 0..12 {
+                        match rng.below(3) {
+                            0 => gates.push(HFreeGate::X(rng.below(n as u64) as usize)),
+                            1 if n > 1 => {
+                                let c = rng.below(n as u64) as usize;
+                                let mut t = rng.below(n as u64) as usize;
+                                if t == c {
+                                    t = (t + 1) % n_us;
+                                }
+                                gates.push(HFreeGate::Cx(c, t));
+                            }
+                            _ => {
+                                let q = rng.below(n as u64) as usize;
+                                let theta = FUZZ_ANGLES[rng.below(FUZZ_ANGLES.len() as u64) as usize];
+                                gates.push(HFreeGate::Rz(q, theta));
+                            }
+                        }
+                    }
+                    let rewritten = push_x_right(&gates, n_us);
+
+                    let mut orig = EvaluatedPathSum::new_id(n);
+                    let mut orig_sim = DenseSim::identity(n_us);
+                    apply_hfree_gates(&mut orig, &mut orig_sim, &gates);
+
+                    let mut rew = EvaluatedPathSum::new_id(n);
+                    let mut rew_sim = DenseSim::identity(n_us);
+                    apply_hfree_gates(&mut rew, &mut rew_sim, &rewritten);
+
+                    assert_eq!(
+                        orig, rew,
+                        "n={n} seed={seed} case={case}: H-free X-push PathSums differ"
+                    );
+                    let orig_mat = pathsum_to_matrix(&orig);
+                    let rew_mat = pathsum_to_matrix(&rew);
+                    assert!(
+                        matrices_match_up_to_global_phase(&orig_mat, &orig_sim.mat, TOL),
+                        "n={n} seed={seed}: original path sum diverged from dense"
+                    );
+                    assert!(
+                        matrices_match_up_to_global_phase(&rew_mat, &rew_sim.mat, TOL),
+                        "n={n} seed={seed}: rewritten path sum diverged from dense"
+                    );
+                    assert!(
+                        matrices_match_up_to_global_phase(&orig_sim.mat, &rew_sim.mat, TOL),
+                        "n={n} seed={seed}: rewritten circuit is not unitarily equal"
+                    );
+                    case += 1;
+                }
+            }
+        }
+
+        /// `apply_phase(p, θ)` and `apply_phase(p ⊕ 1, −θ)` must intern equal.
+        #[test]
+        fn test_continuous_constant_fold_differential() {
+            let mut rng = XorShift::new(0xA11C_E555_C0DE_0001 | 1);
+            for case in 0..500u32 {
+                let len = rng.below(8) as usize;
+                let mut terms = smallvec::SmallVec::new();
+                for _ in 0..len {
+                    terms.push(rng.below(32) as $primitive);
+                }
+                let p = BooleanPoly::from_terms(terms);
+                let theta = FUZZ_ANGLES[rng.below(FUZZ_ANGLES.len() as u64) as usize];
+
+                let mut a = ContinuousPhasePoly::new();
+                a.apply_phase(p.clone(), theta);
+
+                let mut xor1_terms = p.terms.clone();
+                xor1_terms.push(0);
+                let p1 = BooleanPoly::from_terms(xor1_terms);
+                let mut b = ContinuousPhasePoly::new();
+                b.apply_phase(p1, -theta);
+
+                assert_eq!(
+                    a, b,
+                    "case {case}: apply_phase(p, θ) != apply_phase(p⊕1, −θ)"
+                );
+            }
+        }
     }
 }
