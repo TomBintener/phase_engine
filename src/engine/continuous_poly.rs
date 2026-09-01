@@ -21,23 +21,22 @@ macro_rules! define_continuous_poly_logic {
 
         /// Fold a constant-1 ANF term (monomial 0) into a global phase and drop it.
         /// `e^{iθ(1⊕p)} = e^{iθ} e^{-iθ p}`; interned Eq already ignores global phase.
+        /// Negate before snapping so `θ` on `1⊕p` and `-θ` on `p` share one lattice point.
         fn canonicalize_continuous_parity(
             parity: BooleanPoly,
             theta: f64,
         ) -> Option<(BooleanPoly, f64)> {
-            let mut normalized = snap_phase(theta.rem_euclid(TAU));
-            if normalized == 0.0 || normalized == snap_phase(TAU) {
-                return None;
-            }
             if parity.terms.is_empty() {
                 return None;
             }
-            if parity.terms.first().copied() != Some(0) {
-                return Some((parity, normalized));
-            }
-            normalized = snap_phase((-normalized).rem_euclid(TAU));
+            let has_const = parity.terms.first().copied() == Some(0);
+            let signed = if has_const { -theta } else { theta };
+            let normalized = snap_phase(signed.rem_euclid(TAU));
             if normalized == 0.0 || normalized == snap_phase(TAU) {
                 return None;
+            }
+            if !has_const {
+                return Some((parity, normalized));
             }
             let rest: SmallVec<[$primitive; $poly_capacity]> =
                 parity.terms.iter().copied().filter(|&t| t != 0).collect();
