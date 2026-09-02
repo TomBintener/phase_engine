@@ -24,14 +24,14 @@
 //! width: Patel–Markov–Hayes sectioned elimination (quant-ph/0302002), with
 //! Gauss–Jordan as a fallback. Gray/Steiner residuals use the same helper.
 
-use crate::engine::{engine_64, engine_128};
+use crate::ast::Literal;
+use crate::engine::engine_128::EvaluatedPathSum as EvaluatedPathSum128;
+use crate::engine::engine_64::EvaluatedPathSum as EvaluatedPathSum64;
+use crate::engine::{engine_128, engine_64};
 use crate::prelude::BaseSort;
 use crate::sort::{BaseValues, Boxed};
 use crate::{add_primitive, EGraph, Value};
-use crate::ast::Literal;
-use crate::{TermId, TermDag};
-use crate::engine::engine_64::EvaluatedPathSum as EvaluatedPathSum64;
-use crate::engine::engine_128::EvaluatedPathSum as EvaluatedPathSum128;
+use crate::{TermDag, TermId};
 use std::sync::Arc;
 
 // Define type aliases for the 64-bit and 128-bit engines.
@@ -51,7 +51,9 @@ pub fn id_pathsum_logic_64(num_qubits: i64) -> PSum64 {
     if num_qubits <= 0 {
         PSum64::new(Arc::new(engine_64::EvaluatedPathSum::new_id(0)))
     } else {
-        PSum64::new(Arc::new(engine_64::EvaluatedPathSum::new_id(num_qubits as u32)))
+        PSum64::new(Arc::new(engine_64::EvaluatedPathSum::new_id(
+            num_qubits as u32,
+        )))
     }
 }
 
@@ -83,9 +85,12 @@ where
 }
 
 pub fn apply_cx_logic_64(state: PSum64, qc: i64, qt: i64) -> PSum64 {
-    if qc == qt || qc < 0 || qt < 0 ||
-       qc as usize >= state.num_qubits as usize ||
-       qt as usize >= state.num_qubits as usize {
+    if qc == qt
+        || qc < 0
+        || qt < 0
+        || qc as usize >= state.num_qubits as usize
+        || qt as usize >= state.num_qubits as usize
+    {
         return state;
     }
     let mut new_state = Arc::unwrap_or_clone(state.into_inner());
@@ -113,7 +118,11 @@ pub fn rust_add_rz_bits_logic(a: i64, b: i64) -> i64 {
     let f_a = f64::from_bits(a as u64);
     let f_b = f64::from_bits(b as u64);
     let sum = (f_a + f_b) % (2.0 * std::f64::consts::PI);
-    let bounded = if sum < 0.0 { sum + 2.0 * std::f64::consts::PI } else { sum };
+    let bounded = if sum < 0.0 {
+        sum + 2.0 * std::f64::consts::PI
+    } else {
+        sum
+    };
     let snapped = snap_phase(bounded);
     snapped.to_bits() as i64
 }
@@ -121,7 +130,11 @@ pub fn rust_add_rz_bits_logic(a: i64, b: i64) -> i64 {
 pub fn rust_negate_rz_bits_logic(a: i64) -> i64 {
     let f_a = f64::from_bits(a as u64);
     let neg = -f_a;
-    let bounded = if neg < 0.0 { neg + 2.0 * std::f64::consts::PI } else { neg };
+    let bounded = if neg < 0.0 {
+        neg + 2.0 * std::f64::consts::PI
+    } else {
+        neg
+    };
     let snapped = snap_phase(bounded);
     snapped.to_bits() as i64
 }
@@ -132,7 +145,9 @@ pub fn id_pathsum_logic_128(num_qubits: i64) -> PSum128 {
     if num_qubits <= 0 {
         PSum128::new(Arc::new(engine_128::EvaluatedPathSum::new_id(0)))
     } else {
-        PSum128::new(Arc::new(engine_128::EvaluatedPathSum::new_id(num_qubits as u32)))
+        PSum128::new(Arc::new(engine_128::EvaluatedPathSum::new_id(
+            num_qubits as u32,
+        )))
     }
 }
 
@@ -164,9 +179,12 @@ where
 }
 
 pub fn apply_cx_logic_128(state: PSum128, qc: i64, qt: i64) -> PSum128 {
-    if qc == qt || qc < 0 || qt < 0 ||
-       qc as usize >= state.num_qubits as usize ||
-       qt as usize >= state.num_qubits as usize {
+    if qc == qt
+        || qc < 0
+        || qt < 0
+        || qc as usize >= state.num_qubits as usize
+        || qt as usize >= state.num_qubits as usize
+    {
         return state;
     }
     let mut new_state = Arc::unwrap_or_clone(state.into_inner());
@@ -281,19 +299,26 @@ fn normalized_rz_bits(angle: f64) -> Option<u64> {
     }
 }
 
-pub fn synthesize_steiner_logic_64(state: PSum64, gate_count: i64, hw_cost: i64, topology_str: String, cnot_weight: i64, rz_weight: i64) -> String {
+pub fn synthesize_steiner_logic_64(
+    state: PSum64,
+    gate_count: i64,
+    hw_cost: i64,
+    topology_str: String,
+    cnot_weight: i64,
+    rz_weight: i64,
+) -> String {
     if gate_count <= 2 {
         return "None".to_string();
     }
     let valid_mask = (1_u64 << state.num_qubits) - 1;
     for poly in &state.out_state {
         if (poly.variable_mask & !valid_mask) != 0 {
-            return "None".to_string(); 
+            return "None".to_string();
         }
     }
     // Affine/X offsets are synthesizable: linear CNOT/RZ block + trailing X layer.
     let x_offsets = affine_x_offsets_64(&state);
-    
+
     let topo = crate::engine::engine_64::Topology::new(state.num_qubits as usize, &topology_str);
     let mut instructions = Vec::new();
     // Discrete phase poly is monomial-basis; lift to parities via Mobius
@@ -328,7 +353,7 @@ pub fn synthesize_steiner_logic_64(state: PSum64, gate_count: i64, hw_cost: i64,
         }
         parities = merged.into_iter().collect();
     }
-    
+
     let mut total_cnots = 0;
     for (mask, angle) in parities {
         let Some(rz_bits) = normalized_rz_bits(angle) else {
@@ -340,7 +365,7 @@ pub fn synthesize_steiner_logic_64(state: PSum64, gate_count: i64, hw_cost: i64,
                 terminals.push(i as usize);
             }
         }
-        
+
         if terminals.is_empty() {
             continue;
         } else if terminals.len() == 1 {
@@ -353,12 +378,19 @@ pub fn synthesize_steiner_logic_64(state: PSum64, gate_count: i64, hw_cost: i64,
                 tree_adj[u].push(v);
                 tree_adj[v].push(u);
             }
-            
+
             let mut visited = vec![false; state.num_qubits as usize];
             let mut post_order = Vec::new();
             let mut parent = vec![usize::MAX; state.num_qubits as usize];
-            
-            fn dfs(u: usize, p: usize, adj: &Vec<Vec<usize>>, vis: &mut Vec<bool>, po: &mut Vec<usize>, par: &mut Vec<usize>) {
+
+            fn dfs(
+                u: usize,
+                p: usize,
+                adj: &Vec<Vec<usize>>,
+                vis: &mut Vec<bool>,
+                po: &mut Vec<usize>,
+                par: &mut Vec<usize>,
+            ) {
                 vis[u] = true;
                 par[u] = p;
                 for &v in &adj[u] {
@@ -368,9 +400,16 @@ pub fn synthesize_steiner_logic_64(state: PSum64, gate_count: i64, hw_cost: i64,
                 }
                 po.push(u);
             }
-            
-            dfs(root, usize::MAX, &tree_adj, &mut visited, &mut post_order, &mut parent);
-            
+
+            dfs(
+                root,
+                usize::MAX,
+                &tree_adj,
+                &mut visited,
+                &mut post_order,
+                &mut parent,
+            );
+
             for &u in &post_order {
                 if u != root {
                     let p = parent[u];
@@ -378,9 +417,9 @@ pub fn synthesize_steiner_logic_64(state: PSum64, gate_count: i64, hw_cost: i64,
                     total_cnots += 1;
                 }
             }
-            
+
             instructions.push(format!("rz {},{}", root, rz_bits as i64));
-            
+
             for &u in post_order.iter().rev() {
                 if u != root {
                     let p = parent[u];
@@ -390,13 +429,15 @@ pub fn synthesize_steiner_logic_64(state: PSum64, gate_count: i64, hw_cost: i64,
             }
         }
     }
-    
+
     let mut matrix = Vec::with_capacity(state.num_qubits as usize);
     for i in 0..state.num_qubits as usize {
         matrix.push(state.out_state[i].variable_mask);
     }
-    
-    if let Ok(cnots) = crate::engine::engine_64::synthesize_cnot_matrix(matrix, state.num_qubits as usize) {
+
+    if let Ok(cnots) =
+        crate::engine::engine_64::synthesize_cnot_matrix(matrix, state.num_qubits as usize)
+    {
         let mut final_cnots = Vec::new();
         for (c, t) in cnots {
             crate::engine::engine_64::apply_remote_cnot(c, t, &topo, &mut final_cnots);
@@ -409,25 +450,25 @@ pub fn synthesize_steiner_logic_64(state: PSum64, gate_count: i64, hw_cost: i64,
         return "None".to_string();
     }
     append_x_layer(&mut instructions, &x_offsets);
-    
-    let synth_cost = ((instructions.len() as i64) - total_cnots) * rz_weight + total_cnots * cnot_weight;
+
+    let synth_cost =
+        ((instructions.len() as i64) - total_cnots) * rz_weight + total_cnots * cnot_weight;
     if synth_cost >= hw_cost {
         return "None".to_string();
     }
-    
+
     if instructions.is_empty() {
         return "empty".to_string();
     }
-    
+
     instructions.join(";")
 }
-
 
 pub fn synthesize_pmh_logic_64(state: PSum64, gate_count: i64) -> String {
     if gate_count <= 2 {
         return "None".to_string();
     }
-    
+
     // 1. Purity Check
     // 1a. No discrete or continuous phase polynomial terms (rules out Z/S/T/H/Rz gates).
     if !state.phase_poly.terms.is_empty() || !state.continuous_poly.parities.is_empty() {
@@ -442,27 +483,29 @@ pub fn synthesize_pmh_logic_64(state: PSum64, gate_count: i64) -> String {
     }
     // 1c. Affine/X offsets (monomial `0`) are kept and emitted as a trailing X layer.
     let x_offsets = affine_x_offsets_64(&state);
-    
+
     // 2. Strict CNOT block boundary (pure-X / identity has rank 0 — still allow
     //    a trailing X-only answer when offsets are present).
     let rank = rank_m_minus_i_64(&state);
     if rank == 0 && x_offsets.is_empty() {
         return "None".to_string();
     }
-    
+
     // 3. Rank(M - I) lower bound
     let r = rank;
     if rank > 0 && gate_count <= r {
         return "None".to_string();
     }
-    
+
     // 4. PMH Synthesis
     let mut matrix = Vec::with_capacity(state.num_qubits as usize);
     for i in 0..state.num_qubits as usize {
         matrix.push(state.out_state[i].variable_mask);
     }
-    
-    if let Ok(cnots) = crate::engine::engine_64::synthesize_cnot_matrix(matrix, state.num_qubits as usize) {
+
+    if let Ok(cnots) =
+        crate::engine::engine_64::synthesize_cnot_matrix(matrix, state.num_qubits as usize)
+    {
         let mut instructions: Vec<String> = cnots
             .iter()
             .map(|&(c, t)| format!("cx {},{}", c, t))
@@ -489,7 +532,7 @@ pub fn synthesize_pmh_logic_64(state: PSum64, gate_count: i64) -> String {
             return instructions.join(";");
         }
     }
-    
+
     "None".to_string()
 }
 
@@ -577,18 +620,25 @@ pub fn synthesize_gray_logic_64(
     }
 }
 
-pub fn synthesize_steiner_logic_128(state: PSum128, gate_count: i64, hw_cost: i64, topology_str: String, cnot_weight: i64, rz_weight: i64) -> String {
+pub fn synthesize_steiner_logic_128(
+    state: PSum128,
+    gate_count: i64,
+    hw_cost: i64,
+    topology_str: String,
+    cnot_weight: i64,
+    rz_weight: i64,
+) -> String {
     if gate_count <= 2 {
         return "None".to_string();
     }
     let valid_mask = (1_u128 << state.num_qubits) - 1;
     for poly in &state.out_state {
         if (poly.variable_mask & !valid_mask) != 0 {
-            return "None".to_string(); 
+            return "None".to_string();
         }
     }
     let x_offsets = affine_x_offsets_128(&state);
-    
+
     let topo = crate::engine::engine_128::Topology::new(state.num_qubits as usize, &topology_str);
     let mut instructions = Vec::new();
     // Discrete phase poly is monomial-basis; lift to parities via Mobius
@@ -622,7 +672,7 @@ pub fn synthesize_steiner_logic_128(state: PSum128, gate_count: i64, hw_cost: i6
         }
         parities = merged.into_iter().collect();
     }
-    
+
     let mut total_cnots = 0;
     for (mask, angle) in parities {
         let Some(rz_bits) = normalized_rz_bits(angle) else {
@@ -634,7 +684,7 @@ pub fn synthesize_steiner_logic_128(state: PSum128, gate_count: i64, hw_cost: i6
                 terminals.push(i as usize);
             }
         }
-        
+
         if terminals.is_empty() {
             continue;
         } else if terminals.len() == 1 {
@@ -647,12 +697,19 @@ pub fn synthesize_steiner_logic_128(state: PSum128, gate_count: i64, hw_cost: i6
                 tree_adj[u].push(v);
                 tree_adj[v].push(u);
             }
-            
+
             let mut visited = vec![false; state.num_qubits as usize];
             let mut post_order = Vec::new();
             let mut parent = vec![usize::MAX; state.num_qubits as usize];
-            
-            fn dfs(u: usize, p: usize, adj: &Vec<Vec<usize>>, vis: &mut Vec<bool>, po: &mut Vec<usize>, par: &mut Vec<usize>) {
+
+            fn dfs(
+                u: usize,
+                p: usize,
+                adj: &Vec<Vec<usize>>,
+                vis: &mut Vec<bool>,
+                po: &mut Vec<usize>,
+                par: &mut Vec<usize>,
+            ) {
                 vis[u] = true;
                 par[u] = p;
                 for &v in &adj[u] {
@@ -662,9 +719,16 @@ pub fn synthesize_steiner_logic_128(state: PSum128, gate_count: i64, hw_cost: i6
                 }
                 po.push(u);
             }
-            
-            dfs(root, usize::MAX, &tree_adj, &mut visited, &mut post_order, &mut parent);
-            
+
+            dfs(
+                root,
+                usize::MAX,
+                &tree_adj,
+                &mut visited,
+                &mut post_order,
+                &mut parent,
+            );
+
             for &u in &post_order {
                 if u != root {
                     let p = parent[u];
@@ -672,9 +736,9 @@ pub fn synthesize_steiner_logic_128(state: PSum128, gate_count: i64, hw_cost: i6
                     total_cnots += 1;
                 }
             }
-            
+
             instructions.push(format!("rz {},{}", root, rz_bits as i64));
-            
+
             for &u in post_order.iter().rev() {
                 if u != root {
                     let p = parent[u];
@@ -684,13 +748,15 @@ pub fn synthesize_steiner_logic_128(state: PSum128, gate_count: i64, hw_cost: i6
             }
         }
     }
-    
+
     let mut matrix = Vec::with_capacity(state.num_qubits as usize);
     for i in 0..state.num_qubits as usize {
         matrix.push(state.out_state[i].variable_mask);
     }
-    
-    if let Ok(cnots) = crate::engine::engine_128::synthesize_cnot_matrix(matrix, state.num_qubits as usize) {
+
+    if let Ok(cnots) =
+        crate::engine::engine_128::synthesize_cnot_matrix(matrix, state.num_qubits as usize)
+    {
         let mut final_cnots = Vec::new();
         for (c, t) in cnots {
             crate::engine::engine_128::apply_remote_cnot(c, t, &topo, &mut final_cnots);
@@ -703,19 +769,19 @@ pub fn synthesize_steiner_logic_128(state: PSum128, gate_count: i64, hw_cost: i6
         return "None".to_string();
     }
     append_x_layer(&mut instructions, &x_offsets);
-    
-    let synth_cost = ((instructions.len() as i64) - total_cnots) * rz_weight + total_cnots * cnot_weight;
+
+    let synth_cost =
+        ((instructions.len() as i64) - total_cnots) * rz_weight + total_cnots * cnot_weight;
     if synth_cost >= hw_cost {
         return "None".to_string();
     }
-    
+
     if instructions.is_empty() {
         return "empty".to_string();
     }
-    
+
     instructions.join(";")
 }
-
 
 /// GraySynth-style CX+RZ resynthesis on all-to-all connectivity (128-bit).
 /// See `synthesize_gray_logic_64` for the rationale and guards.
@@ -730,7 +796,11 @@ pub fn synthesize_gray_logic_128(
         return "None".to_string();
     }
     let n = state.num_qubits as usize;
-    let valid_mask: u128 = if n >= 128 { u128::MAX } else { (1u128 << n) - 1 };
+    let valid_mask: u128 = if n >= 128 {
+        u128::MAX
+    } else {
+        (1u128 << n) - 1
+    };
 
     let mut x_offsets = Vec::new();
     for (q, poly) in state.out_state.iter().enumerate() {
@@ -807,26 +877,28 @@ pub fn synthesize_pmh_logic_128(state: PSum128, gate_count: i64) -> String {
     }
     // 1c. Affine/X offsets kept and emitted as a trailing X layer.
     let x_offsets = affine_x_offsets_128(&state);
-    
+
     // 2. Strict CNOT block boundary
     let rank = rank_m_minus_i_128(&state);
     if rank == 0 && x_offsets.is_empty() {
         return "None".to_string();
     }
-    
+
     // 3. Rank(M - I) lower bound
     let r = rank;
     if rank > 0 && gate_count <= r {
         return "None".to_string();
     }
-    
+
     // 4. PMH Synthesis
     let mut matrix = Vec::with_capacity(state.num_qubits as usize);
     for i in 0..state.num_qubits as usize {
         matrix.push(state.out_state[i].variable_mask);
     }
-    
-    if let Ok(cnots) = crate::engine::engine_128::synthesize_cnot_matrix(matrix, state.num_qubits as usize) {
+
+    if let Ok(cnots) =
+        crate::engine::engine_128::synthesize_cnot_matrix(matrix, state.num_qubits as usize)
+    {
         let mut instructions: Vec<String> = cnots
             .iter()
             .map(|&(c, t)| format!("cx {},{}", c, t))
@@ -852,10 +924,9 @@ pub fn synthesize_pmh_logic_128(state: PSum128, gate_count: i64) -> String {
             return instructions.join(";");
         }
     }
-    
-    return "None".to_string();
-}
 
+    "None".to_string()
+}
 
 // --- EGG SORT REGISTRATION ---
 
@@ -863,27 +934,116 @@ pub fn synthesize_pmh_logic_128(state: PSum128, gate_count: i64) -> String {
 pub struct PathSumSort64;
 impl BaseSort for PathSumSort64 {
     type Base = PSum64;
-    fn name(&self) -> &str { "PathSum64" }
+    fn name(&self) -> &str {
+        "PathSum64"
+    }
 
     fn register_primitives(&self, eg: &mut EGraph) {
-        add_primitive!(eg, "rust_id_pathsum_64" = |q: i64| -> PSum64 { id_pathsum_logic_64(q) });
-        add_primitive!(eg, "rust_apply_x_64" = |s: PSum64, q: i64| -> PSum64 { apply_gate_no_reduce_logic_64(s, q, |st, q_| st.apply_x(q_)) });
-        add_primitive!(eg, "rust_apply_z_64" = |s: PSum64, q: i64| -> PSum64 { apply_gate_logic_64(s, q, |st, q_| st.apply_z(q_)) });
-        add_primitive!(eg, "rust_apply_s_64" = |s: PSum64, q: i64| -> PSum64 { apply_gate_logic_64(s, q, |st, q_| st.apply_s(q_)) });
-        add_primitive!(eg, "rust_apply_sdg_64" = |s: PSum64, q: i64| -> PSum64 { apply_gate_logic_64(s, q, |st, q_| st.apply_sdg(q_)) });
-        add_primitive!(eg, "rust_apply_t_64" = |s: PSum64, q: i64| -> PSum64 { apply_gate_logic_64(s, q, |st, q_| st.apply_t(q_)) });
-        add_primitive!(eg, "rust_apply_tdg_64" = |s: PSum64, q: i64| -> PSum64 { apply_gate_logic_64(s, q, |st, q_| st.apply_tdg(q_)) });
-        add_primitive!(eg, "rust_apply_sx_64" = |s: PSum64, q: i64| -> PSum64 { apply_gate_logic_64(s, q, |st, q_| st.apply_sx(q_)) });
-        add_primitive!(eg, "rust_apply_h_64" = |s: PSum64, q: i64| -> PSum64 { apply_gate_logic_64(s, q, |st, q_| st.apply_h(q_)) });
-        add_primitive!(eg, "rust_apply_cx_64" = |s: PSum64, qc: i64, qt: i64| -> PSum64 { apply_cx_logic_64(s, qc, qt) });
-        add_primitive!(eg, "rust_apply_rz_64" = |s: PSum64, q: i64, t: i64| -> PSum64 { apply_rz_logic_64(s, q, t) });
-        add_primitive!(eg, "rust_synthesize_pmh_64" = |s: PSum64, count: i64| -> S { S::new(synthesize_pmh_logic_64(s, count)) });
-        add_primitive!(eg, "rust_synthesize_steiner_64" = |s: PSum64, count: i64, hw_cost: i64, top: S, cnot_wt: i64, rz_wt: i64| -> S { S::new(synthesize_steiner_logic_64(s, count, hw_cost, top.to_string(), cnot_wt, rz_wt)) });
-        add_primitive!(eg, "rust_synthesize_gray_64" = |s: PSum64, count: i64, hw_cost: i64, cnot_wt: i64, rz_wt: i64| -> S { S::new(synthesize_gray_logic_64(s, count, hw_cost, cnot_wt, rz_wt)) });
-        add_primitive!(eg, "rust_state_fingerprint_64" = |s: PSum64| -> S { S::new(state_fingerprint_logic_64(s)) });
-        add_primitive!(eg, "rust_debug_pathsum_64" = |s: PSum64| -> S { S::new(debug_pathsum_logic_64(s)) });
-        add_primitive!(eg, "rust_add_rz_bits_64" = |a: i64, b: i64| -> i64 { rust_add_rz_bits_logic(a, b) });
-        add_primitive!(eg, "rust_negate_rz_bits_64" = |a: i64| -> i64 { rust_negate_rz_bits_logic(a) });
+        add_primitive!(
+            eg,
+            "rust_id_pathsum_64" = |q: i64| -> PSum64 { id_pathsum_logic_64(q) }
+        );
+        add_primitive!(
+            eg,
+            "rust_apply_x_64" = |s: PSum64, q: i64| -> PSum64 {
+                apply_gate_no_reduce_logic_64(s, q, |st, q_| st.apply_x(q_))
+            }
+        );
+        add_primitive!(
+            eg,
+            "rust_apply_z_64" = |s: PSum64, q: i64| -> PSum64 {
+                apply_gate_logic_64(s, q, |st, q_| st.apply_z(q_))
+            }
+        );
+        add_primitive!(
+            eg,
+            "rust_apply_s_64" = |s: PSum64, q: i64| -> PSum64 {
+                apply_gate_logic_64(s, q, |st, q_| st.apply_s(q_))
+            }
+        );
+        add_primitive!(
+            eg,
+            "rust_apply_sdg_64" = |s: PSum64, q: i64| -> PSum64 {
+                apply_gate_logic_64(s, q, |st, q_| st.apply_sdg(q_))
+            }
+        );
+        add_primitive!(
+            eg,
+            "rust_apply_t_64" = |s: PSum64, q: i64| -> PSum64 {
+                apply_gate_logic_64(s, q, |st, q_| st.apply_t(q_))
+            }
+        );
+        add_primitive!(
+            eg,
+            "rust_apply_tdg_64" = |s: PSum64, q: i64| -> PSum64 {
+                apply_gate_logic_64(s, q, |st, q_| st.apply_tdg(q_))
+            }
+        );
+        add_primitive!(
+            eg,
+            "rust_apply_sx_64" = |s: PSum64, q: i64| -> PSum64 {
+                apply_gate_logic_64(s, q, |st, q_| st.apply_sx(q_))
+            }
+        );
+        add_primitive!(
+            eg,
+            "rust_apply_h_64" = |s: PSum64, q: i64| -> PSum64 {
+                apply_gate_logic_64(s, q, |st, q_| st.apply_h(q_))
+            }
+        );
+        add_primitive!(
+            eg,
+            "rust_apply_cx_64" =
+                |s: PSum64, qc: i64, qt: i64| -> PSum64 { apply_cx_logic_64(s, qc, qt) }
+        );
+        add_primitive!(
+            eg,
+            "rust_apply_rz_64" =
+                |s: PSum64, q: i64, t: i64| -> PSum64 { apply_rz_logic_64(s, q, t) }
+        );
+        add_primitive!(
+            eg,
+            "rust_synthesize_pmh_64" =
+                |s: PSum64, count: i64| -> S { S::new(synthesize_pmh_logic_64(s, count)) }
+        );
+        add_primitive!(
+            eg,
+            "rust_synthesize_steiner_64" =
+                |s: PSum64, count: i64, hw_cost: i64, top: S, cnot_wt: i64, rz_wt: i64| -> S {
+                    S::new(synthesize_steiner_logic_64(
+                        s,
+                        count,
+                        hw_cost,
+                        top.to_string(),
+                        cnot_wt,
+                        rz_wt,
+                    ))
+                }
+        );
+        add_primitive!(
+            eg,
+            "rust_synthesize_gray_64" =
+                |s: PSum64, count: i64, hw_cost: i64, cnot_wt: i64, rz_wt: i64| -> S {
+                    S::new(synthesize_gray_logic_64(s, count, hw_cost, cnot_wt, rz_wt))
+                }
+        );
+        add_primitive!(
+            eg,
+            "rust_state_fingerprint_64" =
+                |s: PSum64| -> S { S::new(state_fingerprint_logic_64(s)) }
+        );
+        add_primitive!(
+            eg,
+            "rust_debug_pathsum_64" = |s: PSum64| -> S { S::new(debug_pathsum_logic_64(s)) }
+        );
+        add_primitive!(
+            eg,
+            "rust_add_rz_bits_64" = |a: i64, b: i64| -> i64 { rust_add_rz_bits_logic(a, b) }
+        );
+        add_primitive!(
+            eg,
+            "rust_negate_rz_bits_64" = |a: i64| -> i64 { rust_negate_rz_bits_logic(a) }
+        );
     }
     fn reconstruct_termdag(&self, _bv: &BaseValues, _v: Value, td: &mut TermDag) -> TermId {
         let arg = td.lit(Literal::Int(0));
@@ -895,27 +1055,116 @@ impl BaseSort for PathSumSort64 {
 pub struct PathSumSort128;
 impl BaseSort for PathSumSort128 {
     type Base = PSum128;
-    fn name(&self) -> &str { "PathSum128" }
+    fn name(&self) -> &str {
+        "PathSum128"
+    }
 
     fn register_primitives(&self, eg: &mut EGraph) {
-        add_primitive!(eg, "rust_id_pathsum_128" = |q: i64| -> PSum128 { id_pathsum_logic_128(q) });
-        add_primitive!(eg, "rust_apply_x_128" = |s: PSum128, q: i64| -> PSum128 { apply_gate_no_reduce_logic_128(s, q, |st, q_| st.apply_x(q_)) });
-        add_primitive!(eg, "rust_apply_z_128" = |s: PSum128, q: i64| -> PSum128 { apply_gate_logic_128(s, q, |st, q_| st.apply_z(q_)) });
-        add_primitive!(eg, "rust_apply_s_128" = |s: PSum128, q: i64| -> PSum128 { apply_gate_logic_128(s, q, |st, q_| st.apply_s(q_)) });
-        add_primitive!(eg, "rust_apply_sdg_128" = |s: PSum128, q: i64| -> PSum128 { apply_gate_logic_128(s, q, |st, q_| st.apply_sdg(q_)) });
-        add_primitive!(eg, "rust_apply_t_128" = |s: PSum128, q: i64| -> PSum128 { apply_gate_logic_128(s, q, |st, q_| st.apply_t(q_)) });
-        add_primitive!(eg, "rust_apply_tdg_128" = |s: PSum128, q: i64| -> PSum128 { apply_gate_logic_128(s, q, |st, q_| st.apply_tdg(q_)) });
-        add_primitive!(eg, "rust_apply_sx_128" = |s: PSum128, q: i64| -> PSum128 { apply_gate_logic_128(s, q, |st, q_| st.apply_sx(q_)) });
-        add_primitive!(eg, "rust_apply_h_128" = |s: PSum128, q: i64| -> PSum128 { apply_gate_logic_128(s, q, |st, q_| st.apply_h(q_)) });
-        add_primitive!(eg, "rust_apply_cx_128" = |s: PSum128, qc: i64, qt: i64| -> PSum128 { apply_cx_logic_128(s, qc, qt) });
-        add_primitive!(eg, "rust_apply_rz_128" = |s: PSum128, q: i64, t: i64| -> PSum128 { apply_rz_logic_128(s, q, t) });
-        add_primitive!(eg, "rust_synthesize_pmh_128" = |s: PSum128, count: i64| -> S { S::new(synthesize_pmh_logic_128(s, count)) });
-        add_primitive!(eg, "rust_synthesize_steiner_128" = |s: PSum128, count: i64, hw_cost: i64, top: S, cnot_wt: i64, rz_wt: i64| -> S { S::new(synthesize_steiner_logic_128(s, count, hw_cost, top.to_string(), cnot_wt, rz_wt)) });
-        add_primitive!(eg, "rust_synthesize_gray_128" = |s: PSum128, count: i64, hw_cost: i64, cnot_wt: i64, rz_wt: i64| -> S { S::new(synthesize_gray_logic_128(s, count, hw_cost, cnot_wt, rz_wt)) });
-        add_primitive!(eg, "rust_state_fingerprint_128" = |s: PSum128| -> S { S::new(state_fingerprint_logic_128(s)) });
-        add_primitive!(eg, "rust_debug_pathsum_128" = |s: PSum128| -> S { S::new(debug_pathsum_logic_128(s)) });
-        add_primitive!(eg, "rust_add_rz_bits_128" = |a: i64, b: i64| -> i64 { rust_add_rz_bits_logic(a, b) });
-        add_primitive!(eg, "rust_negate_rz_bits_128" = |a: i64| -> i64 { rust_negate_rz_bits_logic(a) });
+        add_primitive!(
+            eg,
+            "rust_id_pathsum_128" = |q: i64| -> PSum128 { id_pathsum_logic_128(q) }
+        );
+        add_primitive!(
+            eg,
+            "rust_apply_x_128" = |s: PSum128, q: i64| -> PSum128 {
+                apply_gate_no_reduce_logic_128(s, q, |st, q_| st.apply_x(q_))
+            }
+        );
+        add_primitive!(
+            eg,
+            "rust_apply_z_128" = |s: PSum128, q: i64| -> PSum128 {
+                apply_gate_logic_128(s, q, |st, q_| st.apply_z(q_))
+            }
+        );
+        add_primitive!(
+            eg,
+            "rust_apply_s_128" = |s: PSum128, q: i64| -> PSum128 {
+                apply_gate_logic_128(s, q, |st, q_| st.apply_s(q_))
+            }
+        );
+        add_primitive!(
+            eg,
+            "rust_apply_sdg_128" = |s: PSum128, q: i64| -> PSum128 {
+                apply_gate_logic_128(s, q, |st, q_| st.apply_sdg(q_))
+            }
+        );
+        add_primitive!(
+            eg,
+            "rust_apply_t_128" = |s: PSum128, q: i64| -> PSum128 {
+                apply_gate_logic_128(s, q, |st, q_| st.apply_t(q_))
+            }
+        );
+        add_primitive!(
+            eg,
+            "rust_apply_tdg_128" = |s: PSum128, q: i64| -> PSum128 {
+                apply_gate_logic_128(s, q, |st, q_| st.apply_tdg(q_))
+            }
+        );
+        add_primitive!(
+            eg,
+            "rust_apply_sx_128" = |s: PSum128, q: i64| -> PSum128 {
+                apply_gate_logic_128(s, q, |st, q_| st.apply_sx(q_))
+            }
+        );
+        add_primitive!(
+            eg,
+            "rust_apply_h_128" = |s: PSum128, q: i64| -> PSum128 {
+                apply_gate_logic_128(s, q, |st, q_| st.apply_h(q_))
+            }
+        );
+        add_primitive!(
+            eg,
+            "rust_apply_cx_128" =
+                |s: PSum128, qc: i64, qt: i64| -> PSum128 { apply_cx_logic_128(s, qc, qt) }
+        );
+        add_primitive!(
+            eg,
+            "rust_apply_rz_128" =
+                |s: PSum128, q: i64, t: i64| -> PSum128 { apply_rz_logic_128(s, q, t) }
+        );
+        add_primitive!(
+            eg,
+            "rust_synthesize_pmh_128" =
+                |s: PSum128, count: i64| -> S { S::new(synthesize_pmh_logic_128(s, count)) }
+        );
+        add_primitive!(
+            eg,
+            "rust_synthesize_steiner_128" =
+                |s: PSum128, count: i64, hw_cost: i64, top: S, cnot_wt: i64, rz_wt: i64| -> S {
+                    S::new(synthesize_steiner_logic_128(
+                        s,
+                        count,
+                        hw_cost,
+                        top.to_string(),
+                        cnot_wt,
+                        rz_wt,
+                    ))
+                }
+        );
+        add_primitive!(
+            eg,
+            "rust_synthesize_gray_128" =
+                |s: PSum128, count: i64, hw_cost: i64, cnot_wt: i64, rz_wt: i64| -> S {
+                    S::new(synthesize_gray_logic_128(s, count, hw_cost, cnot_wt, rz_wt))
+                }
+        );
+        add_primitive!(
+            eg,
+            "rust_state_fingerprint_128" =
+                |s: PSum128| -> S { S::new(state_fingerprint_logic_128(s)) }
+        );
+        add_primitive!(
+            eg,
+            "rust_debug_pathsum_128" = |s: PSum128| -> S { S::new(debug_pathsum_logic_128(s)) }
+        );
+        add_primitive!(
+            eg,
+            "rust_add_rz_bits_128" = |a: i64, b: i64| -> i64 { rust_add_rz_bits_logic(a, b) }
+        );
+        add_primitive!(
+            eg,
+            "rust_negate_rz_bits_128" = |a: i64| -> i64 { rust_negate_rz_bits_logic(a) }
+        );
     }
     fn reconstruct_termdag(&self, _bv: &BaseValues, _v: Value, td: &mut TermDag) -> TermId {
         let arg = td.lit(Literal::Int(0));
@@ -940,8 +1189,14 @@ pub fn state_fingerprint_logic_128(state: PSum128) -> String {
 
 pub fn debug_pathsum_logic_64(state: PSum64) -> String {
     let mut out = String::new();
-    out.push_str(&format!("Continuous Parities: {:?}\n", state.continuous_poly.parities));
-    out.push_str(&format!("Continuous Phases: {:?}\n", state.continuous_poly.phases));
+    out.push_str(&format!(
+        "Continuous Parities: {:?}\n",
+        state.continuous_poly.parities
+    ));
+    out.push_str(&format!(
+        "Continuous Phases: {:?}\n",
+        state.continuous_poly.phases
+    ));
     out.push_str("Phase Poly Terms: ");
     for term in &state.phase_poly.terms {
         let phase_unit = term.0 >> 61;
@@ -953,8 +1208,14 @@ pub fn debug_pathsum_logic_64(state: PSum64) -> String {
 
 pub fn debug_pathsum_logic_128(state: PSum128) -> String {
     let mut out = String::new();
-    out.push_str(&format!("Continuous Parities: {:?}\n", state.continuous_poly.parities));
-    out.push_str(&format!("Continuous Phases: {:?}\n", state.continuous_poly.phases));
+    out.push_str(&format!(
+        "Continuous Parities: {:?}\n",
+        state.continuous_poly.parities
+    ));
+    out.push_str(&format!(
+        "Continuous Phases: {:?}\n",
+        state.continuous_poly.phases
+    ));
     out.push_str("Phase Poly Terms: ");
     for term in &state.phase_poly.terms {
         let phase_unit = term.0 >> 125;
@@ -1015,6 +1276,7 @@ mod gray_tests {
 
     fn assert_gray_equal(gates: &[(&str, i64, i64)], n: i64) -> String {
         let ps = build(gates, n);
+        let orig = ps.clone();
         let fp_orig = state_fingerprint_logic_64(ps.clone());
         let out = synthesize_gray_logic_64(ps, 1_000, i64::MAX, 50, 1);
         assert_ne!(out, "None", "gray refused a synthesizable state");
@@ -1024,9 +1286,14 @@ mod gray_tests {
             replay(&out, n)
         };
         assert_eq!(
-            state_fingerprint_logic_64(replayed),
+            state_fingerprint_logic_64(replayed.clone()),
             fp_orig,
             "resynthesized circuit is not engine-equal (instructions: {out})"
+        );
+        assert_eq!(
+            orig.into_inner(),
+            replayed.into_inner(),
+            "PathSum PartialEq failed (the state_union trust base); instructions: {out}"
         );
         out
     }
@@ -1044,8 +1311,8 @@ mod gray_tests {
             ("cx", 0, 1),
         ];
         let out = assert_gray_equal(&g, 4);
-        // Quality: the naive build/unbuild ladder uses 6 CX; sharing must do
-        // strictly better on a single parity (3 up + fixup back).
+        // Quality: the naive build/unbuild ladder uses 6 CX; GraySynth must
+        // not exceed that on a single parity.
         let cx_count = out.matches("cx").count();
         assert!(cx_count <= 6, "no CX saving over per-term trees: {out}");
     }
@@ -1110,15 +1377,21 @@ mod gray_tests {
         let mut ps = id_pathsum_logic_64(2);
         ps = apply_cx_logic_64(ps, 0, 1);
         ps = apply_gate_logic_64(ps, 1, |st, q| st.apply_x(q));
+        let orig = ps.clone();
         let fp_orig = state_fingerprint_logic_64(ps.clone());
         let out = synthesize_gray_logic_64(ps, 1_000, i64::MAX, 50, 1);
         assert_ne!(out, "None", "gray should accept affine/X offsets");
         assert!(out.contains("x 1"), "expected trailing X layer: {out}");
         let replayed = replay(&out, 2);
         assert_eq!(
-            state_fingerprint_logic_64(replayed),
+            state_fingerprint_logic_64(replayed.clone()),
             fp_orig,
             "affine resynthesis not engine-equal (instructions: {out})"
+        );
+        assert_eq!(
+            orig.into_inner(),
+            replayed.into_inner(),
+            "affine PathSum PartialEq failed (instructions: {out})"
         );
     }
 
@@ -1186,8 +1459,7 @@ mod gray_tests {
         let ps = build(&g, 3);
         let fp_orig = state_fingerprint_logic_64(ps.clone());
         let gray = synthesize_gray_logic_64(ps.clone(), 1_000, i64::MAX, 50, 1);
-        let steiner =
-            synthesize_steiner_logic_64(ps, 1_000, i64::MAX, String::new(), 50, 1);
+        let steiner = synthesize_steiner_logic_64(ps, 1_000, i64::MAX, String::new(), 50, 1);
         assert_ne!(gray, "None");
         assert_ne!(steiner, "None");
         assert_eq!(
@@ -1199,6 +1471,115 @@ mod gray_tests {
             state_fingerprint_logic_64(replay(&steiner, 3)),
             fp_orig,
             "steiner replay drifted (instructions: {steiner})"
+        );
+    }
+
+    fn cx_count(instr: &[String]) -> i64 {
+        instr.iter().filter(|s| s.starts_with("cx ")).count() as i64
+    }
+
+    #[test]
+    fn paper_gray_eq_and_not_worse_than_nn_mean_cx() {
+        // Random H-free CX+RZ maps: paper tour must PartialEq-replay and
+        // must not exceed NN mean CX (the old production tour).
+        let mut rng = 0xC0FFEE_u64;
+        let mut lcg = || {
+            rng = rng
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            rng
+        };
+        let mut paper_cx = 0i64;
+        let mut nn_cx = 0i64;
+        let mut cases = 0i64;
+        for n in [3usize, 4, 6, 8] {
+            for _ in 0..32 {
+                let n_terms = 2 + (lcg() as usize % (n + 2));
+                let mut parities = Vec::new();
+                for _ in 0..n_terms {
+                    let mask = lcg() & ((1u64 << n) - 1);
+                    if mask == 0 {
+                        continue;
+                    }
+                    let ang = ((lcg() % 7) as f64 + 1.0) * std::f64::consts::PI / 8.0;
+                    parities.push((mask, ang));
+                }
+                if parities.is_empty() {
+                    continue;
+                }
+                let target: Vec<u64> = (0..n).map(|i| 1u64 << i).collect();
+                let paper =
+                    crate::engine::engine_64::synthesize_gray_network(&parities, &target, n);
+                let nn =
+                    crate::engine::engine_64::synthesize_gray_network_nn(&parities, &target, n);
+                let (p_instr, _) = paper.expect("paper GraySynth refused a linear H-free set");
+                let (n_instr, _) = nn.expect("NN GraySynth refused a linear H-free set");
+                paper_cx += cx_count(&p_instr);
+                nn_cx += cx_count(&n_instr);
+                cases += 1;
+
+                let p_ast = p_instr.join(";");
+                let n_ast = n_instr.join(";");
+                let p_ps = if p_ast.is_empty() {
+                    id_pathsum_logic_64(n as i64)
+                } else {
+                    replay(&p_ast, n as i64)
+                };
+                let n_ps = if n_ast.is_empty() {
+                    id_pathsum_logic_64(n as i64)
+                } else {
+                    replay(&n_ast, n as i64)
+                };
+                assert_eq!(
+                    p_ps.into_inner(),
+                    n_ps.into_inner(),
+                    "paper vs NN PathSum Eq failed n={n} paper={p_ast} nn={n_ast}"
+                );
+            }
+        }
+        assert!(cases > 0);
+        assert!(
+            paper_cx <= nn_cx,
+            "paper mean CX worse than NN: paper={paper_cx} nn={nn_cx} over {cases} cases"
+        );
+    }
+
+    #[test]
+    fn paper_example_4_2_identity_pointed() {
+        // arXiv:1712.01859 Example 4.2 columns (1-indexed x1..x4 = bits 0..3):
+        // {x2⊕x3, x1, x1⊕x4, x1⊕x2⊕x3, x1⊕x2⊕x4, x1⊕x2}, all T = π/8, pointed at I.
+        let pi8 = std::f64::consts::PI / 8.0;
+        let parities: Vec<(u64, f64)> = vec![
+            (0b0110, pi8),
+            (0b0001, pi8),
+            (0b1001, pi8),
+            (0b0111, pi8),
+            (0b1011, pi8),
+            (0b0011, pi8),
+        ];
+        let n = 4usize;
+        let target: Vec<u64> = (0..n).map(|i| 1u64 << i).collect();
+        let (instr, _) = crate::engine::engine_64::synthesize_gray_network(&parities, &target, n)
+            .expect("paper Example 4.2 must synthesize");
+        let ast = instr.join(";");
+        let replayed = replay(&ast, n as i64);
+
+        let mut orig = id_pathsum_logic_64(n as i64);
+        for &(mask, ang) in &parities {
+            let members: Vec<i64> = (0..n as i64).filter(|&i| (mask >> i) & 1 == 1).collect();
+            let t = *members.last().unwrap();
+            for &s in &members[..members.len() - 1] {
+                orig = apply_cx_logic_64(orig, s, t);
+            }
+            orig = apply_rz_logic_64(orig, t, ang.to_bits() as i64);
+            for &s in members[..members.len() - 1].iter().rev() {
+                orig = apply_cx_logic_64(orig, s, t);
+            }
+        }
+        assert_eq!(
+            orig.into_inner(),
+            replayed.into_inner(),
+            "Example 4.2 PathSum Eq failed (instructions: {ast})"
         );
     }
 }
@@ -1224,7 +1605,10 @@ mod pmh_pathsum_tests {
                 let q: i64 = args.trim().parse().unwrap();
                 ps = apply_gate_logic_64(ps, q, |st, q| st.apply_x(q));
             } else {
-                let parts: Vec<i64> = instr.split(',').map(|v| v.trim().parse().unwrap()).collect();
+                let parts: Vec<i64> = instr
+                    .split(',')
+                    .map(|v| v.trim().parse().unwrap())
+                    .collect();
                 ps = apply_cx_logic_64(ps, parts[0], parts[1]);
             }
         }
@@ -1248,7 +1632,10 @@ mod pmh_pathsum_tests {
                 let q: i64 = args.trim().parse().unwrap();
                 ps = apply_gate_logic_128(ps, q, |st, q| st.apply_x(q));
             } else {
-                let parts: Vec<i64> = instr.split(',').map(|v| v.trim().parse().unwrap()).collect();
+                let parts: Vec<i64> = instr
+                    .split(',')
+                    .map(|v| v.trim().parse().unwrap())
+                    .collect();
                 ps = apply_cx_logic_128(ps, parts[0], parts[1]);
             }
         }
@@ -1413,8 +1800,10 @@ mod pmh_pathsum_tests {
                         args.split(',').map(|v| v.trim().parse().unwrap()).collect();
                     composed = apply_cx_logic_64(composed, parts[0], parts[1]);
                 } else {
-                    let parts: Vec<i64> =
-                        instr.split(',').map(|v| v.trim().parse().unwrap()).collect();
+                    let parts: Vec<i64> = instr
+                        .split(',')
+                        .map(|v| v.trim().parse().unwrap())
+                        .collect();
                     composed = apply_cx_logic_64(composed, parts[0], parts[1]);
                 }
             }
@@ -1435,7 +1824,10 @@ mod pmh_pathsum_tests {
             for k in 0..samples {
                 let ps = random_cx_128(n, ops, 0x4040 + (n as u64) * 11 + k);
                 let fp = state_fingerprint_logic_128(ps.clone());
-                assert_ne!(fp, id_fp, "128-bit random CX product was identity n={n} k={k}");
+                assert_ne!(
+                    fp, id_fp,
+                    "128-bit random CX product was identity n={n} k={k}"
+                );
                 let out = synthesize_pmh_logic_128(ps, 1_000);
                 assert_ne!(
                     out, "None",
@@ -1604,7 +1996,11 @@ mod pmh_pathsum_tests {
         );
 
         let from_mask = pathsum_from_matrix_64(matrix, n);
-        assert_eq!(masks_64(&from_mask), matrix, "{label}: from_mask drifted from M");
+        assert_eq!(
+            masks_64(&from_mask),
+            matrix,
+            "{label}: from_mask drifted from M"
+        );
 
         let from_tape = apply_cnots_pathsum_64(&cnots, n as i64);
         assert_eq!(
@@ -1621,7 +2017,10 @@ mod pmh_pathsum_tests {
         let src = pathsum_from_matrix_64(matrix, n);
         let fp = state_fingerprint_logic_64(src.clone());
         let out = synthesize_pmh_logic_64(src.clone(), i64::MAX);
-        assert_ne!(out, "None", "{label}: PathSum PMH refused a non-identity linear state");
+        assert_ne!(
+            out, "None",
+            "{label}: PathSum PMH refused a non-identity linear state"
+        );
         let replayed = replay_pmh_64(&out, n as i64);
         assert_eq!(
             state_fingerprint_logic_64(replayed.clone()),
@@ -1651,7 +2050,11 @@ mod pmh_pathsum_tests {
         );
 
         let from_mask = pathsum_from_matrix_128(matrix, n);
-        assert_eq!(masks_128(&from_mask), matrix, "{label}: from_mask drifted from M");
+        assert_eq!(
+            masks_128(&from_mask),
+            matrix,
+            "{label}: from_mask drifted from M"
+        );
         let from_tape = apply_cnots_pathsum_128(&cnots, n as i64);
         assert_eq!(
             from_mask.into_inner(),
@@ -1662,7 +2065,10 @@ mod pmh_pathsum_tests {
         let src = pathsum_from_matrix_128(matrix, n);
         let fp = state_fingerprint_logic_128(src.clone());
         let out = synthesize_pmh_logic_128(src.clone(), i64::MAX);
-        assert_ne!(out, "None", "{label}: PathSum PMH 128 refused a linear state");
+        assert_ne!(
+            out, "None",
+            "{label}: PathSum PMH 128 refused a linear state"
+        );
         let replayed = replay_pmh_128(&out, n as i64);
         assert_eq!(
             state_fingerprint_logic_128(replayed.clone()),
