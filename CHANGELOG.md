@@ -2,6 +2,7 @@
 
 ## [Unreleased] - ReleaseDate
 
+- Replace Gauss–Jordan `synthesize_cnot_matrix` with sectioned Patel–Markov–Hayes (quant-ph/0302002). Keep GE as `synthesize_cnot_matrix_ge` fallback. Gray/Steiner residuals share the new helper.
 - Add typed `EGraph` extension state that clones with `EGraph` and is restored by `push`/`pop`.
 - Report full source file paths in egglog span and error messages.
 - Fix seminaive matching after nested containers rebuild in place by propagating dirty container ids through parent containers.
