@@ -1172,19 +1172,18 @@ impl BaseSort for PathSumSort128 {
     }
 }
 
-/// Complete canonical state fingerprint (64-bit): the derive(Debug) dump of
-/// every `EvaluatedPathSum` field, i.e. exactly the fields `PartialEq`
-/// compares. Two states are engine-equal iff their fingerprints match, which
-/// gives host-side passes the same trust base as `state_union`
-/// (`debug_pathsum` is NOT sufficient: it omits `out_state` and the masks).
+/// Complete canonical state fingerprint (64-bit): the interned equality
+/// key of `EvaluatedPathSum` (`PartialEq` / `Hash`), so two fingerprints
+/// match iff `state_union` would merge the states. Continuous phases are
+/// the 1e8 snap ticks, not raw `f64` Debug (`debug_pathsum` is still not
+/// an equality check: it omits `out_state`).
 pub fn state_fingerprint_logic_64(state: PSum64) -> String {
-    // Arc's Debug delegates to the inner EvaluatedPathSum.
-    format!("{:?}", state.into_inner())
+    state.into_inner().eq_fingerprint()
 }
 
 /// Complete canonical state fingerprint (128-bit); see the 64-bit variant.
 pub fn state_fingerprint_logic_128(state: PSum128) -> String {
-    format!("{:?}", state.into_inner())
+    state.into_inner().eq_fingerprint()
 }
 
 pub fn debug_pathsum_logic_64(state: PSum64) -> String {
@@ -1223,6 +1222,62 @@ pub fn debug_pathsum_logic_128(state: PSum128) -> String {
         out.push_str(&format!("(mask={}, phase_unit={}) ", mask, phase_unit));
     }
     out
+}
+
+#[cfg(test)]
+mod fingerprint_tests {
+    use super::*;
+    use crate::engine::engine_64;
+
+    /// `state_union` / interned `PartialEq` snap continuous phases to 1e8
+    /// ticks. The host fingerprint must follow that lattice, not raw `f64`
+    /// Debug, so pre-pass string compare matches in-cycle merge.
+    #[test]
+    fn fingerprint_matches_snapped_eq_not_raw_debug() {
+        let mut a = engine_64::EvaluatedPathSum::new_id(1);
+        a.apply_rz(0, 0.37);
+        assert!(
+            !a.continuous_poly.phases.is_empty(),
+            "0.37 is not a π/4 multiple; it must stay in the continuous poly"
+        );
+
+        let mut b = a.clone();
+        b.continuous_poly.phases[0] += 0.4 / SNAP_PRECISION;
+
+        assert_eq!(
+            a, b,
+            "perturbation inside the same snap tick must be PartialEq"
+        );
+        assert_ne!(
+            format!("{:?}", a.continuous_poly.phases[0]),
+            format!("{:?}", b.continuous_poly.phases[0]),
+            "raw f64 Debug should still distinguish the perturbation"
+        );
+
+        let fp_a = state_fingerprint_logic_64(PSum64::new(Arc::new(a.clone())));
+        let fp_b = state_fingerprint_logic_64(PSum64::new(Arc::new(b)));
+        assert_eq!(
+            fp_a, fp_b,
+            "snap-equal states must share the host fingerprint"
+        );
+        assert!(
+            fp_a.contains("num_qubits: 1"),
+            "AGES still matches this Debug-shaped field; got {fp_a}"
+        );
+        assert!(
+            !fp_a.contains("phases: [0."),
+            "fingerprint must emit snap ticks, not raw f64 Debug: {fp_a}"
+        );
+
+        let mut c = a.clone();
+        c.continuous_poly.phases[0] += 0.6 / SNAP_PRECISION;
+        assert_ne!(a, c, "crossing a snap tick must change PartialEq");
+        assert_ne!(
+            state_fingerprint_logic_64(PSum64::new(Arc::new(a))),
+            state_fingerprint_logic_64(PSum64::new(Arc::new(c))),
+            "crossing a snap tick must change the host fingerprint"
+        );
+    }
 }
 
 #[cfg(test)]
