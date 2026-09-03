@@ -133,14 +133,14 @@ macro_rules! define_evaluator_logic {
                 assert!(var_index < (<$primitive>::BITS - 3), "Exceeded variable limit");
                 let v_mask = 1 as $primitive << var_index;
                 self.num_path_vars += 1;
-                
+
                 // XOR the path variable into the target qubit
                 let v_poly = BooleanPoly::from_terms(smallvec::smallvec![v_mask]);
                 self.out_state[q].add_assign(&v_poly);
-                
+
                 // Add S^dag(v) to the phase polynomial (6 units of pi/4)
                 let mut batch = Vec::with_capacity(1);
-                batch.push(PackedPhaseTerm::create(v_mask, 6)); 
+                batch.push(PackedPhaseTerm::create(v_mask, 6));
                 self.phase_poly.merge_unsorted_batch(batch);
             }
 
@@ -163,7 +163,7 @@ macro_rules! define_evaluator_logic {
             pub fn promote_cliffords(&mut self) -> bool {
                 let cliffords = self.continuous_poly.extract_cliffords();
                 if cliffords.is_empty() { return false; }
-                
+
                 for (monomials, phase_units) in cliffords {
                     self.push_phase_expansion(&monomials, phase_units);
                 }
@@ -174,6 +174,28 @@ macro_rules! define_evaluator_logic {
                 let current_parity = self.out_state[q].clone();
                 self.continuous_poly.apply_phase(current_parity, theta);
                 self.promote_cliffords();
+            }
+
+            /// Equality key for host-side fingerprint strings: every field
+            /// `PartialEq` / `Hash` intern on, with continuous phases as the
+            /// same 1e8 snap ticks (not raw `f64` Debug, which can distinguish
+            /// states `state_union` would merge).
+            pub fn eq_fingerprint(&self) -> String {
+                let phase_ticks: Vec<i64> = self
+                    .continuous_poly
+                    .phases
+                    .iter()
+                    .map(|&p| (p * SNAP_PRECISION).round() as i64)
+                    .collect();
+                format!(
+                    "EvaluatedPathSum {{ num_qubits: {}, num_path_vars: {}, out_state: {:?}, phase_poly: {:?}, continuous_poly: ContinuousPhasePoly {{ parities: {:?}, phases: {:?} }} }}",
+                    self.num_qubits,
+                    self.num_path_vars,
+                    self.out_state,
+                    self.phase_poly,
+                    self.continuous_poly.parities,
+                    phase_ticks
+                )
             }
         }
     }

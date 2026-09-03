@@ -78,3 +78,6 @@ generate_phase_engine!(
     8
 );
 mod debug_test;
+
+#[cfg(test)]
+mod pmh_tests;

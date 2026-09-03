@@ -3,6 +3,9 @@
 ## [Unreleased] - ReleaseDate
 
 - PathSum: fold constant-1 continuous parities (global phase) so interned Eq matches `X RZ(θ) ≡ RZ(−θ) X`.
+- Replace Gauss–Jordan `synthesize_cnot_matrix` with sectioned Patel–Markov–Hayes (quant-ph/0302002). Keep GE as `synthesize_cnot_matrix_ge` fallback. Gray/Steiner residuals share the new helper.
+- Canonicalize `state_fingerprint` onto the interned PathSum equality key (continuous phases as 1e8 snap ticks, not raw `f64` Debug) so pre-pass fingerprints match `state_union`.
+- Replace the Gray-flavoured nearest-neighbour parity tour with Amy–Azimzadeh–Mosca GraySynth (arXiv:1712.01859 Alg. 1). Residual linear fix-up is still PMH. The old NN tour remains `synthesize_gray_network_nn` as a test oracle.
 - Add typed `EGraph` extension state that clones with `EGraph` and is restored by `push`/`pop`.
 - Report full source file paths in egglog span and error messages.
 - Fix seminaive matching after nested containers rebuild in place by propagating dirty container ids through parent containers.
