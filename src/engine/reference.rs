@@ -70,7 +70,9 @@ macro_rules! define_reference_logic {
                         .iter()
                         .zip(state.continuous_poly.phases.iter())
                     {
-                        if eval_bool_poly(parity, assign) { phase += ticks_to_angle(*ticks); }
+                        if (*parity & assign).count_ones() % 2 == 1 {
+                            phase += ticks_to_angle(*ticks);
+                        }
                     }
                     let mut out = 0usize;
                     for q in 0..n {

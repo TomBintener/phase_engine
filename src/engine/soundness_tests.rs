@@ -217,6 +217,18 @@ macro_rules! define_soundness_tests_logic {
                     apply_random_gate(&mut rng, &mut state, &mut sim);
                     state.reduce();
                     if state.num_path_vars > 10 { break; }
+                    let live = if state.num_qubits + state.num_path_vars >= <$primitive>::BITS {
+                        <$primitive>::MAX
+                    } else {
+                        (1 as $primitive << (state.num_qubits + state.num_path_vars)) - 1
+                    };
+                    for &p in &state.continuous_poly.parities {
+                        assert_eq!(
+                            p & !live,
+                            0,
+                            "seed {seed}, step {step}: continuous mask has a bit past n+m"
+                        );
+                    }
                     let mat = pathsum_to_matrix(&state);
                     assert!(
                         matrices_match_up_to_global_phase(&mat, &sim.mat, TOL),
@@ -839,10 +851,13 @@ macro_rules! define_soundness_tests_logic {
         fn test_continuous_constant_fold_differential() {
             let mut rng = XorShift::new(0xA11C_E555_C0DE_0001 | 1);
             for case in 0..500u32 {
-                let len = rng.below(8) as usize;
+                // Linear XOR of a few low bits; product monomials are not a mask.
+                let mut mask = rng.below(16) as $primitive;
                 let mut terms = smallvec::SmallVec::new();
-                for _ in 0..len {
-                    terms.push(rng.below(32) as $primitive);
+                while mask != 0 {
+                    let bit = mask.trailing_zeros();
+                    terms.push(1 as $primitive << bit);
+                    mask &= mask - 1;
                 }
                 let p = BooleanPoly::from_terms(terms);
                 let theta = FUZZ_ANGLES[rng.below(FUZZ_ANGLES.len() as u64) as usize];

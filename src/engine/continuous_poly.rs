@@ -12,38 +12,55 @@ macro_rules! define_continuous_poly_logic {
         /// (`TICKS_PER_TURN` per 2π, see `engine/mod.rs`), always in
         /// `1..TICKS_PER_TURN`. All arithmetic is exact modular integer
         /// arithmetic; the only rounding happens once when an `f64` angle
-        /// enters through `apply_phase`. Parities are sorted by terms and never
-        /// contain the constant monomial (folded into a sign flip, see
-        /// `canonicalize_continuous_parity`).
+        /// enters through `apply_phase`.
+        ///
+        /// Each parity is a linear XOR of variables, stored as one bitmask
+        /// (bit `k` set iff variable `k` appears). The constant monomial is
+        /// never stored: `e^{iθ(1⊕p)} = e^{iθ} e^{-iθ p}` folds into a sign
+        /// flip, and interned Eq already ignores global phase. Production
+        /// gates keep parities linear; product terms are dropped with a
+        /// debug assertion (gauge already bails on those hand-built states).
         #[derive(Debug, Clone, Default, PartialEq, Eq, Hash)]
         pub struct ContinuousPhasePoly {
-            pub parities: Vec<BooleanPoly>,
+            pub parities: Vec<$primitive>,
             pub phases: Vec<u32>,
         }
 
-        /// Fold a constant-1 ANF term (monomial 0) into a global phase and drop it.
-        /// `e^{iθ(1⊕p)} = e^{iθ} e^{-iθ p}`; interned Eq already ignores global phase.
-        fn canonicalize_continuous_parity(
-            parity: BooleanPoly,
+        /// Convert an affine/linear `BooleanPoly` into `(mask, flip)`.
+        /// `flip` is true when the constant-1 term was present (phase negates).
+        /// Product monomials are not representable as a mask; they are ignored
+        /// after a debug assertion.
+        fn linear_mask_and_flip(parity: &BooleanPoly) -> ( $primitive, bool ) {
+            let mut mask = 0 as $primitive;
+            let mut flip = false;
+            for &t in &parity.terms {
+                if t == 0 {
+                    flip = !flip;
+                    continue;
+                }
+                debug_assert_eq!(
+                    t.count_ones(),
+                    1,
+                    "continuous parity must be a linear XOR of variables"
+                );
+                if t.count_ones() == 1 {
+                    mask ^= t;
+                }
+            }
+            (mask, flip)
+        }
+
+        /// Fold a constant-1 ANF term into a global phase and drop it.
+        fn canonicalize_continuous_mask(
+            mask: $primitive,
             ticks: u32,
-        ) -> Option<(BooleanPoly, u32)> {
-            if parity.terms.is_empty() {
+            flip: bool,
+        ) -> Option<($primitive, u32)> {
+            let signed = if flip { negate_ticks(ticks) } else { add_ticks(ticks, 0) };
+            if signed == 0 || mask == 0 {
                 return None;
             }
-            let has_const = parity.terms.first().copied() == Some(0);
-            let signed = if has_const { negate_ticks(ticks) } else { add_ticks(ticks, 0) };
-            if signed == 0 {
-                return None;
-            }
-            if !has_const {
-                return Some((parity, signed));
-            }
-            let rest: SmallVec<[$primitive; $poly_capacity]> =
-                parity.terms.iter().copied().filter(|&t| t != 0).collect();
-            if rest.is_empty() {
-                return None;
-            }
-            Some((BooleanPoly::from_terms(rest), signed))
+            Some((mask, signed))
         }
 
         impl ContinuousPhasePoly {
@@ -56,11 +73,12 @@ macro_rules! define_continuous_poly_logic {
             }
 
             pub fn apply_ticks(&mut self, parity: BooleanPoly, ticks: u32) {
-                let Some((parity, ticks)) = canonicalize_continuous_parity(parity, ticks) else {
+                let (mask, flip) = linear_mask_and_flip(&parity);
+                let Some((mask, ticks)) = canonicalize_continuous_mask(mask, ticks, flip) else {
                     return;
                 };
 
-                match self.parities.binary_search_by(|p| p.terms.cmp(&parity.terms)) {
+                match self.parities.binary_search(&mask) {
                     Ok(idx) => {
                         let sum = add_ticks(self.phases[idx], ticks);
                         if sum == 0 {
@@ -71,7 +89,7 @@ macro_rules! define_continuous_poly_logic {
                         }
                     }
                     Err(idx) => {
-                        self.parities.insert(idx, parity);
+                        self.parities.insert(idx, mask);
                         self.phases.insert(idx, ticks);
                     }
                 }
@@ -81,23 +99,23 @@ macro_rules! define_continuous_poly_logic {
                 if self.parities.is_empty() { return; }
                 let combined: Vec<_> = self.parities.drain(..).zip(self.phases.drain(..)).collect();
                 let mut folded = Vec::with_capacity(combined.len());
-                for (parity, ticks) in combined {
-                    if let Some(pair) = canonicalize_continuous_parity(parity, ticks) {
+                for (mask, ticks) in combined {
+                    if let Some(pair) = canonicalize_continuous_mask(mask, ticks, false) {
                         folded.push(pair);
                     }
                 }
-                folded.sort_unstable_by(|a, b| a.0.terms.cmp(&b.0.terms));
+                folded.sort_unstable_by_key(|(mask, _)| *mask);
 
                 let mut i = 0;
                 while i < folded.len() {
                     let mut j = i + 1;
                     let mut accumulated = folded[i].1;
-                    while j < folded.len() && folded[j].0.terms == folded[i].0.terms {
+                    while j < folded.len() && folded[j].0 == folded[i].0 {
                         accumulated = add_ticks(accumulated, folded[j].1);
                         j += 1;
                     }
                     if accumulated != 0 {
-                        self.parities.push(folded[i].0.clone());
+                        self.parities.push(folded[i].0);
                         self.phases.push(accumulated);
                     }
                     i = j;
@@ -105,30 +123,13 @@ macro_rules! define_continuous_poly_logic {
             }
 
             pub fn substitute(&mut self, u_mask: $primitive, e_poly: &BooleanPoly) {
-                for parity in self.parities.iter_mut() {
-                    if (parity.variable_mask & u_mask) == 0 { continue; }
-                    let mut b_poly = BooleanPoly::from_terms(Default::default());
-                    parity.terms.retain(|term| {
-                        if (*term & u_mask) != 0 {
-                            b_poly.terms.push(*term & !u_mask);
-                            false
-                        } else {
-                            true
-                        }
-                    });
-                    b_poly.terms.sort_unstable();
-                    b_poly.variable_mask = b_poly.terms.iter().fold(0, |acc, &x| acc | x);
-                    if !b_poly.terms.is_empty() {
-                        let mut eb_poly = BooleanPoly::from_terms(Default::default());
-                        for e_term in &e_poly.terms {
-                            let mut shifted_b = b_poly.clone();
-                            if *e_term != 0 {
-                                for b in &mut shifted_b.terms { *b |= *e_term; }
-                                shifted_b.terms.sort_unstable();
-                            }
-                            eb_poly.add_assign(&shifted_b);
-                        }
-                        parity.add_assign(&eb_poly);
+                let (e_mask, e_flip) = linear_mask_and_flip(e_poly);
+                for (parity, ticks) in self.parities.iter_mut().zip(self.phases.iter_mut()) {
+                    if (*parity & u_mask) == 0 { continue; }
+                    *parity ^= u_mask;
+                    *parity ^= e_mask;
+                    if e_flip {
+                        *ticks = negate_ticks(*ticks);
                     }
                 }
             }
@@ -156,13 +157,18 @@ macro_rules! define_continuous_poly_logic {
                     let units = (2 * (ticks / TICKS_PER_PI_2)) as u8;
                     let remainder = (ticks % TICKS_PER_PI_2) as u32;
                     if units != 0 {
-                        extracted.push((self.parities[read_idx].terms.to_vec(), units));
+                        let mut terms = Vec::new();
+                        let mut mask = self.parities[read_idx];
+                        while mask != 0 {
+                            let bit = mask.trailing_zeros();
+                            terms.push(1 as $primitive << bit);
+                            mask &= mask - 1;
+                        }
+                        extracted.push((terms, units));
                     }
                     if remainder != 0 {
                         self.phases[write_idx] = remainder;
-                        if read_idx != write_idx {
-                            self.parities[write_idx] = self.parities[read_idx].clone();
-                        }
+                        self.parities[write_idx] = self.parities[read_idx];
                         write_idx += 1;
                     }
                 }

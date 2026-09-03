@@ -18,7 +18,7 @@ macro_rules! define_reduction_logic {
                 v_mask: $primitive,
             ) -> bool {
                 out_state.iter().any(|p| (p.variable_mask & v_mask) != 0)
-                    || continuous.parities.iter().any(|p| (p.variable_mask & v_mask) != 0)
+                    || continuous.parities.iter().any(|p| (*p & v_mask) != 0)
             }
 
             /// Substitute `v := v XOR e` everywhere (an invertible affine change
@@ -31,9 +31,21 @@ macro_rules! define_reduction_logic {
                         poly.add_assign(e_poly);
                     }
                 }
-                for parity in &mut self.continuous_poly.parities {
-                    if (parity.variable_mask & v_mask) != 0 && parity.terms.contains(&v_mask) {
-                        parity.add_assign(e_poly);
+                for (parity, ticks) in self
+                    .continuous_poly
+                    .parities
+                    .iter_mut()
+                    .zip(self.continuous_poly.phases.iter_mut())
+                {
+                    if (*parity & v_mask) == 0 {
+                        continue;
+                    }
+                    for &t in &e_poly.terms {
+                        if t == 0 {
+                            *ticks = negate_ticks(*ticks);
+                        } else if t.count_ones() == 1 {
+                            *parity ^= t;
+                        }
                     }
                 }
                 if (self.phase_poly.terms.iter().fold(0, |acc, t| acc | t.monomial()) & v_mask) == 0 {
@@ -97,9 +109,7 @@ macro_rules! define_reduction_logic {
                 // Gate application keeps rows and parities affine in the path
                 // variables; bail on hand-built states that are not.
                 let nonlinear = |t: &$primitive| (*t & path_mask) != 0 && (*t & (*t - 1)) != 0;
-                if self.out_state.iter().any(|p| p.terms.iter().any(nonlinear))
-                    || self.continuous_poly.parities.iter().any(|p| p.terms.iter().any(nonlinear))
-                {
+                if self.out_state.iter().any(|p| p.terms.iter().any(nonlinear)) {
                     return false;
                 }
 
@@ -174,22 +184,21 @@ macro_rules! define_reduction_logic {
                 //    that, or the pass would not be idempotent.
                 loop {
                     let mut best: Option<(u64, $primitive, u32, usize)> = None;
-                    for (i, parity) in self.continuous_poly.parities.iter().enumerate() {
-                        let fresh = parity.variable_mask & path_mask & !pivots;
+                    for (i, &parity) in self.continuous_poly.parities.iter().enumerate() {
+                        let fresh = parity & path_mask & !pivots;
                         if fresh == 0 { continue; }
                         let r = self.continuous_poly.phases[i] as u64;
-                        let key = (r.min(TICKS_PER_PI_2 - r), canon_anchor(parity.variable_mask), fresh.count_ones(), i);
+                        let key = (r.min(TICKS_PER_PI_2 - r), canon_anchor(parity), fresh.count_ones(), i);
                         if best.map_or(true, |b| key < b) { best = Some(key); }
                     }
                     let Some((_, _, _, i)) = best else { break };
-                    let fresh = self.continuous_poly.parities[i].variable_mask & path_mask & !pivots;
+                    let fresh = self.continuous_poly.parities[i] & path_mask & !pivots;
                     let v = pick(fresh, &self.phase_poly);
                     pivots |= v;
-                    if self.continuous_poly.parities[i].terms.len() > 1 {
-                        let residue: SmallVec<[$primitive; $poly_capacity]> =
-                            self.continuous_poly.parities[i].terms.iter().copied().filter(|&t| t != v).collect();
+                    if self.continuous_poly.parities[i] != v {
+                        let residue = BooleanPoly::from_mask(self.continuous_poly.parities[i] ^ v);
                         changed = true;
-                        self.gauge_substitute(v, &BooleanPoly::from_terms(residue));
+                        self.gauge_substitute(v, &residue);
                         // Keep parities canonical (constant fold, sort) and the
                         // split canonical before choosing the next pivot.
                         self.continuous_poly.compact();
@@ -230,9 +239,9 @@ macro_rules! define_reduction_logic {
                         }
                     }
                     for (parity, &ticks) in this.continuous_poly.parities.iter().zip(this.continuous_poly.phases.iter()) {
-                        let mut pv = parity.variable_mask & rest_mask;
+                        let mut pv = *parity & rest_mask;
                         if pv == 0 { continue; }
-                        let h = mix(mix(fold_bits(canon_anchor(parity.variable_mask)) ^ 0x7f4a_7c15_9e37_79b9)
+                        let h = mix(mix(fold_bits(canon_anchor(*parity)) ^ 0x7f4a_7c15_9e37_79b9)
                             ^ ((ticks as u64) << 32)
                             ^ (pv.count_ones() as u64));
                         while pv != 0 {
@@ -265,10 +274,10 @@ macro_rules! define_reduction_logic {
                 let mut pcount = [0u8; <$primitive>::BITS as usize];
                 let mut parity_adj: $primitive = 0;
                 for (parity, &ticks) in self.continuous_poly.parities.iter().zip(self.continuous_poly.phases.iter()) {
-                    let pv = parity.variable_mask & rest_mask;
+                    let pv = *parity & rest_mask;
                     if pv == 0 { continue; }
                     if pv & (pv - 1) != 0 { parity_adj |= pv; }
-                    if parity.terms.len() == 1 { bare[pv.trailing_zeros() as usize] = ticks as u64; }
+                    if *parity & (*parity - 1) == 0 { bare[pv.trailing_zeros() as usize] = ticks as u64; }
                     let mut f = pv;
                     while f != 0 {
                         pcount[f.trailing_zeros() as usize] += 1;
@@ -314,7 +323,7 @@ macro_rules! define_reduction_logic {
                         }
                     }
                     for parity in self.continuous_poly.parities.iter() {
-                        let tv = parity.variable_mask & tied;
+                        let tv = *parity & tied;
                         if tv & (tv - 1) == 0 { continue; }
                         let mut f = tv;
                         while f != 0 {
@@ -518,8 +527,8 @@ macro_rules! define_reduction_logic {
                     .parities
                     .iter()
                     .zip(self.continuous_poly.phases.iter())
-                    .filter(|(p, _)| (p.variable_mask & comp) != 0)
-                    .map(|(p, &ticks)| { let (m, others) = view(p.variable_mask); (m, ticks, others) })
+                    .filter(|(p, _)| (*p & comp) != 0)
+                    .map(|(p, &ticks)| { let (m, others) = view(*p); (m, ticks, others) })
                     .collect();
                 parities.sort_unstable();
                 (terms, parities)
@@ -541,12 +550,12 @@ macro_rules! define_reduction_logic {
                 let mut parity_count: u64 = 0;
                 let mut shared: Vec<($primitive, u64)> = Vec::new(); // (other var bit, #shared parities)
                 for (parity, &ticks) in self.continuous_poly.parities.iter().zip(self.continuous_poly.phases.iter()) {
-                    if (parity.variable_mask & v) == 0 { continue; }
+                    if (*parity & v) == 0 { continue; }
                     parity_count += 1;
-                    if parity.terms.len() == 1 {
+                    if *parity & (*parity - 1) == 0 {
                         bare_remainder = Some(ticks as u64);
                     }
-                    let mut others = parity.variable_mask & !v;
+                    let mut others = *parity & !v;
                     while others != 0 {
                         let w = 1 as $primitive << others.trailing_zeros();
                         others &= others - 1;
@@ -620,9 +629,7 @@ macro_rules! define_reduction_logic {
                     *poly = BooleanPoly::from_terms(new_terms);
                 }
                 for parity in &mut self.continuous_poly.parities {
-                    for t in &mut parity.terms { *t = remap_mono(*t); }
-                    parity.terms.sort_unstable();
-                    parity.variable_mask = parity.terms.iter().fold(0, |acc, &x| acc | x);
+                    *parity = remap_mono(*parity);
                 }
                 self.continuous_poly.compact();
                 let mut new_phase_terms = Vec::with_capacity(self.phase_poly.terms.len());
@@ -653,7 +660,7 @@ macro_rules! define_reduction_logic {
 
                     let mut global_out_mask = self.out_state.iter().fold(0, |acc, p| acc | p.variable_mask);
                     for parity in &self.continuous_poly.parities {
-                        global_out_mask |= parity.variable_mask;
+                        global_out_mask |= *parity;
                     }
 
                     let mut continuous_needs_compact = false;
@@ -721,8 +728,15 @@ macro_rules! define_reduction_logic {
                             scan_structure(&poly.terms, path_var_mask, lo, structure_id, &mut nonlinear, &mut lin_occ);
                             structure_id += 1;
                         }
-                        for parity in &self.continuous_poly.parities {
-                            scan_structure(&parity.terms, path_var_mask, lo, structure_id, &mut nonlinear, &mut lin_occ);
+                        for &parity in &self.continuous_poly.parities {
+                            let mut terms = SmallVec::<[$primitive; $poly_capacity]>::new();
+                            let mut bits = parity;
+                            while bits != 0 {
+                                let bit = 1 as $primitive << bits.trailing_zeros();
+                                terms.push(bit);
+                                bits &= bits - 1;
+                            }
+                            scan_structure(&terms, path_var_mask, lo, structure_id, &mut nonlinear, &mut lin_occ);
                             structure_id += 1;
                         }
 
@@ -759,8 +773,7 @@ macro_rules! define_reduction_logic {
                                 poly.variable_mask = poly.terms.iter().fold(0, |acc, &x| acc | x);
                             }
                             for parity in &mut self.continuous_poly.parities {
-                                parity.terms.retain(|t| *t != v1_mask);
-                                parity.variable_mask = parity.terms.iter().fold(0, |acc, &x| acc | x);
+                                *parity &= !v1_mask;
                             }
 
                             let mut new_phase_terms = Vec::with_capacity(self.phase_poly.terms.len() * 3);
@@ -791,7 +804,7 @@ macro_rules! define_reduction_logic {
                     if basis_changed {
                         global_out_mask = self.out_state.iter().fold(0, |acc, p| acc | p.variable_mask);
                         for parity in &self.continuous_poly.parities {
-                            global_out_mask |= parity.variable_mask;
+                            global_out_mask |= *parity;
                         }
                         self.continuous_poly.compact();
                         overall_changed = true;
@@ -937,7 +950,7 @@ macro_rules! define_reduction_logic {
                             // current state rather than a stale snapshot.
                             global_out_mask = self.out_state.iter().fold(0, |acc, p| acc | p.variable_mask);
                             for parity in &self.continuous_poly.parities {
-                                global_out_mask |= parity.variable_mask;
+                                global_out_mask |= *parity;
                             }
 
                             let mut next_gen_terms = Vec::with_capacity(self.phase_poly.terms.len());
@@ -993,9 +1006,7 @@ macro_rules! define_reduction_logic {
                         }
 
                         for parity in &mut self.continuous_poly.parities {
-                            for t in &mut parity.terms { *t = remap_mono(*t); }
-                            parity.terms.sort_unstable();
-                            parity.variable_mask = parity.terms.iter().fold(0, |acc, &x| acc | x);
+                            *parity = remap_mono(*parity);
                         }
                         continuous_needs_compact = true;
 

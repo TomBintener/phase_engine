@@ -92,7 +92,7 @@ macro_rules! define_tests_logic {
             // Odd lattice quotients stay in the parity table: one T on x0.
             assert!(state.phase_poly.terms.is_empty());
             assert_eq!(state.continuous_poly.parities.len(), 1);
-            assert_eq!(state.continuous_poly.parities[0].terms.as_slice(), &[1]);
+            assert_eq!(state.continuous_poly.parities[0], 1 as $primitive);
             assert_eq!(state.continuous_poly.phases[0] as u64, TICKS_PER_PI_4);
             let mut t = EvaluatedPathSum::new_id(1);
             t.apply_t(0);
@@ -246,9 +246,7 @@ macro_rules! define_tests_logic {
             poly.compact();
 
             assert_eq!(poly.parities.len(), 1);
-            let mut expected_terms = smallvec![x0, x1, v];
-            expected_terms.sort_unstable();
-            assert_eq!(poly.parities[0], BooleanPoly::from_terms(expected_terms));
+            assert_eq!(poly.parities[0], x0 | x1 | v);
         }
 
         #[test]
@@ -399,7 +397,7 @@ macro_rules! define_tests_logic {
             // constant-1 continuous parity (1 ⊕ x) into -θ on x.
             assert_eq!(s1, s2);
             assert_eq!(s1.continuous_poly.parities.len(), 1);
-            assert!(!s1.continuous_poly.parities[0].terms.contains(&0));
+            assert_eq!(s1.continuous_poly.parities[0], 1 as $primitive);
             // -0.1 ≡ 2π - 0.1 = 3π/2 (promoted, phase 6) + remainder.
             let expected = (-0.1_f64).rem_euclid(2.0 * std::f64::consts::PI) - 6.0 * std::f64::consts::FRAC_PI_4;
             assert!((ticks_to_angle(s1.continuous_poly.phases[0]) - expected).abs() < 1e-7);
@@ -439,7 +437,7 @@ macro_rules! define_tests_logic {
 
             assert_eq!(a, b);
             assert_eq!(a.parities.len(), 1);
-            assert_eq!(a.parities[0].terms.as_slice(), &[x0]);
+            assert_eq!(a.parities[0], x0);
 
             let mut global = ContinuousPhasePoly::new();
             global.apply_phase(BooleanPoly::from_terms(smallvec![0]), theta);

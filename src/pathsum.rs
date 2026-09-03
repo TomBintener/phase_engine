@@ -276,11 +276,8 @@ fn rank_m_minus_i_128(state: &EvaluatedPathSum128) -> i64 {
 fn continuous_parities_are_qubit_linear_64(state: &EvaluatedPathSum64) -> bool {
     let n = state.num_qubits as usize;
     let valid_mask: u64 = if n >= 64 { u64::MAX } else { (1u64 << n) - 1 };
-    for p in &state.continuous_poly.parities {
-        if (p.variable_mask & !valid_mask) != 0 {
-            return false;
-        }
-        if p.terms.iter().any(|&t| t == 0 || t.count_ones() != 1) {
+    for &p in &state.continuous_poly.parities {
+        if p == 0 || (p & !valid_mask) != 0 {
             return false;
         }
     }
@@ -290,11 +287,8 @@ fn continuous_parities_are_qubit_linear_64(state: &EvaluatedPathSum64) -> bool {
 fn continuous_parities_are_qubit_linear_128(state: &EvaluatedPathSum128) -> bool {
     let n = state.num_qubits as usize;
     let valid_mask: u128 = if n >= 128 { u128::MAX } else { (1u128 << n) - 1 };
-    for p in &state.continuous_poly.parities {
-        if (p.variable_mask & !valid_mask) != 0 {
-            return false;
-        }
-        if p.terms.iter().any(|&t| t == 0 || t.count_ones() != 1) {
+    for &p in &state.continuous_poly.parities {
+        if p == 0 || (p & !valid_mask) != 0 {
             return false;
         }
     }
@@ -389,8 +383,7 @@ pub fn synthesize_steiner_logic_64(
         Some(disc) => parities.extend(disc),
         None => return "None".to_string(),
     }
-    for (i, p) in state.continuous_poly.parities.iter().enumerate() {
-        let mask = p.variable_mask;
+    for (i, &mask) in state.continuous_poly.parities.iter().enumerate() {
         let angle = crate::engine::ticks_to_angle(state.continuous_poly.phases[i]);
         parities.push((mask, angle));
     }
@@ -639,8 +632,8 @@ pub fn synthesize_gray_logic_64(
     }
 
     let mut parities: Vec<(u64, f64)> = Vec::new();
-    for (i, p) in state.continuous_poly.parities.iter().enumerate() {
-        parities.push((p.variable_mask, crate::engine::ticks_to_angle(state.continuous_poly.phases[i])));
+    for (i, &mask) in state.continuous_poly.parities.iter().enumerate() {
+        parities.push((mask, crate::engine::ticks_to_angle(state.continuous_poly.phases[i])));
     }
 
     let mut monomials: Vec<(u64, f64)> = Vec::new();
@@ -718,8 +711,7 @@ pub fn synthesize_steiner_logic_128(
         Some(disc) => parities.extend(disc),
         None => return "None".to_string(),
     }
-    for (i, p) in state.continuous_poly.parities.iter().enumerate() {
-        let mask = p.variable_mask;
+    for (i, &mask) in state.continuous_poly.parities.iter().enumerate() {
         let angle = crate::engine::ticks_to_angle(state.continuous_poly.phases[i]);
         parities.push((mask, angle));
     }
@@ -884,8 +876,8 @@ pub fn synthesize_gray_logic_128(
     }
 
     let mut parities: Vec<(u128, f64)> = Vec::new();
-    for (i, p) in state.continuous_poly.parities.iter().enumerate() {
-        parities.push((p.variable_mask, crate::engine::ticks_to_angle(state.continuous_poly.phases[i])));
+    for (i, &mask) in state.continuous_poly.parities.iter().enumerate() {
+        parities.push((mask, crate::engine::ticks_to_angle(state.continuous_poly.phases[i])));
     }
 
     let mut monomials: Vec<(u128, f64)> = Vec::new();
