@@ -530,6 +530,272 @@ macro_rules! define_soundness_tests_logic {
             }
         }
 
+        // ------------------------------------------------------------------
+        // Canonical gauge + order-independent phase split
+        // ------------------------------------------------------------------
+
+        #[derive(Clone, Copy, Debug)]
+        enum FuzzGate {
+            X(usize),
+            Z(usize),
+            S(usize),
+            Sdg(usize),
+            T(usize),
+            Tdg(usize),
+            Sx(usize),
+            H(usize),
+            Rz(usize, f64),
+            Cx(usize, usize),
+        }
+
+        impl FuzzGate {
+            fn qubits(self) -> (usize, Option<usize>) {
+                match self {
+                    FuzzGate::Cx(c, t) => (c, Some(t)),
+                    FuzzGate::X(q) | FuzzGate::Z(q) | FuzzGate::S(q) | FuzzGate::Sdg(q)
+                    | FuzzGate::T(q) | FuzzGate::Tdg(q) | FuzzGate::Sx(q) | FuzzGate::H(q)
+                    | FuzzGate::Rz(q, _) => (q, None),
+                }
+            }
+            fn touches(self, other: FuzzGate) -> bool {
+                let (a0, a1) = self.qubits();
+                let (b0, b1) = other.qubits();
+                let a = [Some(a0), a1];
+                let b = [Some(b0), b1];
+                a.iter().flatten().any(|x| b.iter().flatten().any(|y| x == y))
+            }
+        }
+
+        /// Apply one gate to the path sum (with the eager `reduce()` the FFI
+        /// performs) and to the dense simulator. `ibm_h` encodes `H` as
+        /// `RZ(π/2) SX RZ(π/2)`.
+        fn apply_fuzz_gate(state: &mut EvaluatedPathSum, sim: Option<&mut DenseSim>, g: FuzzGate, ibm_h: bool) {
+            use std::f64::consts::{FRAC_PI_2, FRAC_PI_4, PI};
+            let mut sim = sim;
+            macro_rules! dense {
+                ($e:expr) => { if let Some(s) = sim.as_deref_mut() { $e(s); } };
+            }
+            match g {
+                FuzzGate::X(q) => { state.apply_x(q); dense!(|s: &mut DenseSim| s.x(q)); }
+                FuzzGate::Z(q) => { state.apply_z(q); dense!(|s: &mut DenseSim| s.phase_gate(q, PI)); }
+                FuzzGate::S(q) => { state.apply_s(q); dense!(|s: &mut DenseSim| s.phase_gate(q, FRAC_PI_2)); }
+                FuzzGate::Sdg(q) => { state.apply_sdg(q); dense!(|s: &mut DenseSim| s.phase_gate(q, -FRAC_PI_2)); }
+                FuzzGate::T(q) => { state.apply_t(q); dense!(|s: &mut DenseSim| s.phase_gate(q, FRAC_PI_4)); }
+                FuzzGate::Tdg(q) => { state.apply_tdg(q); dense!(|s: &mut DenseSim| s.phase_gate(q, -FRAC_PI_4)); }
+                FuzzGate::Sx(q) => { state.apply_sx(q); dense!(|s: &mut DenseSim| s.sx(q)); }
+                FuzzGate::H(q) => {
+                    if ibm_h {
+                        state.apply_rz(q, FRAC_PI_2);
+                        state.reduce();
+                        state.apply_sx(q);
+                        state.reduce();
+                        state.apply_rz(q, FRAC_PI_2);
+                    } else {
+                        state.apply_h(q);
+                    }
+                    dense!(|s: &mut DenseSim| s.h(q));
+                }
+                FuzzGate::Rz(q, theta) => { state.apply_rz(q, theta); dense!(|s: &mut DenseSim| s.phase_gate(q, theta)); }
+                FuzzGate::Cx(c, t) => { state.apply_cx(c, t); dense!(|s: &mut DenseSim| s.cx(c, t)); }
+            }
+            state.reduce();
+        }
+
+        fn run_fuzz_circuit(n: usize, gates: &[FuzzGate], ibm_h: bool) -> (EvaluatedPathSum, DenseSim) {
+            let mut state = EvaluatedPathSum::new_id(n as u32);
+            let mut sim = DenseSim::identity(n);
+            for &g in gates {
+                apply_fuzz_gate(&mut state, Some(&mut sim), g, ibm_h);
+            }
+            (state, sim)
+        }
+
+        /// Random circuit over the full gate set with at most `max_hs`
+        /// path-variable allocations (H / SX), so brute-force matrices stay small.
+        fn random_fuzz_circuit(rng: &mut XorShift, n: usize, len: usize, max_hs: usize) -> Vec<FuzzGate> {
+            let mut gates = Vec::with_capacity(len);
+            let mut hs = 0usize;
+            for _ in 0..len {
+                let q = rng.below(n as u64) as usize;
+                let g = match rng.below(10) {
+                    0 => FuzzGate::X(q),
+                    1 => FuzzGate::Z(q),
+                    2 => FuzzGate::S(q),
+                    3 => FuzzGate::Sdg(q),
+                    4 => FuzzGate::T(q),
+                    5 => FuzzGate::Tdg(q),
+                    6 if hs < max_hs => { hs += 1; FuzzGate::Sx(q) }
+                    7 if hs < max_hs => { hs += 1; FuzzGate::H(q) }
+                    6 | 7 => FuzzGate::S(q),
+                    8 => FuzzGate::Rz(q, FUZZ_ANGLES[rng.below(FUZZ_ANGLES.len() as u64) as usize]),
+                    _ => {
+                        if n == 1 { FuzzGate::Z(q) } else {
+                            let mut c = rng.below(n as u64) as usize;
+                            if c == q { c = (c + 1) % n; }
+                            FuzzGate::Cx(c, q)
+                        }
+                    }
+                };
+                gates.push(g);
+            }
+            gates
+        }
+
+        fn assert_pair(label: &str, n: usize, a: &[FuzzGate], b: &[FuzzGate], ibm_h_b: bool, expect_equal: bool) {
+            let (sa, ma) = run_fuzz_circuit(n, a, false);
+            let (sb, mb) = run_fuzz_circuit(n, b, ibm_h_b);
+            let unitary_equal = matrices_match_up_to_global_phase(&ma.mat, &mb.mat, TOL);
+            assert_eq!(unitary_equal, expect_equal, "{label}: dense-matrix premise is wrong");
+            assert!(
+                matrices_match_up_to_global_phase(&pathsum_to_matrix(&sa), &ma.mat, TOL)
+                    && matrices_match_up_to_global_phase(&pathsum_to_matrix(&sb), &mb.mat, TOL),
+                "{label}: a path sum diverged from the dense reference"
+            );
+            assert_eq!(sa == sb, expect_equal, "{label}: interned Eq = {} but unitary equality = {expect_equal}\n a = {sa:?}\n b = {sb:?}", sa == sb);
+        }
+
+        /// Operator identities that used to intern unequal because the path
+        /// variable gauge (allocation order, H vs SX encoding, affine residue)
+        /// or the discrete/continuous split leaked into the canonical form.
+        #[test]
+        fn test_gauge_and_split_canonical_pairs() {
+            use FuzzGate::*;
+            use std::f64::consts::{FRAC_PI_4, PI};
+            let th = 0.3;
+            let ibm_h = |q: usize| -> Vec<FuzzGate> { vec![Rz(q, PI / 2.0), Sx(q), Rz(q, PI / 2.0)] };
+            let alt_h = |q: usize| -> Vec<FuzzGate> { vec![Rz(q, PI / 2.0), X(q), Sx(q), X(q), Rz(q, PI / 2.0)] };
+            let sxdg = |q: usize| -> Vec<FuzzGate> { vec![X(q), Sx(q)] };
+            let cat = |parts: &[&[FuzzGate]]| -> Vec<FuzzGate> { parts.iter().flat_map(|p| p.iter().copied()).collect() };
+
+            // Discrete/continuous split on one parity (H-free).
+            assert_pair("RZ T vs RZ(θ+π/4)", 1, &[Rz(0, th), T(0)], &[Rz(0, th + FRAC_PI_4)], false, true);
+            assert_pair("T RZ vs RZ(θ+π/4)", 1, &[T(0), Rz(0, th)], &[Rz(0, th + FRAC_PI_4)], false, true);
+            assert_pair("CX T CX CX RZ CX vs CX RZ(θ+π/4) CX", 2,
+                &[Cx(0, 1), T(1), Cx(0, 1), Cx(0, 1), Rz(1, th), Cx(0, 1)],
+                &[Cx(0, 1), Rz(1, th + FRAC_PI_4), Cx(0, 1)], false, true);
+            assert_pair("CX RZ Z CX vs CX RZ(θ+π) CX", 2,
+                &[Cx(0, 1), Rz(1, th), Z(1), Cx(0, 1)],
+                &[Cx(0, 1), Rz(1, th + PI), Cx(0, 1)], false, true);
+            assert_pair("Sdg Tdg vs RZ(5π/4)", 1, &[Sdg(0), Tdg(0)], &[Rz(0, 5.0 * FRAC_PI_4)], false, true);
+            assert_pair("X RZ vs RZ(-θ) X", 1, &[X(0), Rz(0, th)], &[Rz(0, -th), X(0)], false, true);
+
+            // Path-variable allocation order.
+            assert_pair("H0 H1 vs H1 H0", 2, &[H(0), H(1)], &[H(1), H(0)], false, true);
+            assert_pair("H0 H1 RZ0 vs H1 H0 RZ0", 2, &[H(0), H(1), Rz(0, th)], &[H(1), H(0), Rz(0, th)], false, true);
+            assert_pair("HTH(0) HTH(1) vs HTH(1) HTH(0)", 2,
+                &[H(0), T(0), H(0), H(1), T(1), H(1)],
+                &[H(1), T(1), H(1), H(0), T(0), H(0)], false, true);
+            assert_pair("SX0 SX1 vs SX1 SX0", 2, &[Sx(0), Sx(1)], &[Sx(1), Sx(0)], false, true);
+
+            // Affine residue on a row / H vs SX encodings.
+            assert_pair("H X vs Z H", 1, &[H(0), X(0)], &[Z(0), H(0)], false, true);
+            assert_pair("H0 H1 CX01 vs CX10 H0 H1", 2, &[H(0), H(1), Cx(0, 1)], &[Cx(1, 0), H(0), H(1)], false, true);
+            assert_pair("nam H vs ibm RZ SX RZ", 1, &[H(0)], &ibm_h(0), false, true);
+            assert_pair("nam H vs alt RZ X SX X RZ", 1, &[H(0)], &alt_h(0), false, true);
+            assert_pair("SX vs H S H", 1, &[Sx(0)], &[H(0), S(0), H(0)], false, true);
+            assert_pair("SXdg vs H Sdg H", 1, &sxdg(0), &[H(0), Sdg(0), H(0)], false, true);
+
+            // Conjugated rotations with different conjugator encodings.
+            assert_pair("H RZ H vs ibmH RZ ibmH", 1,
+                &[H(0), Rz(0, th), H(0)],
+                &cat(&[&ibm_h(0), &[Rz(0, th)], &ibm_h(0)]), false, true);
+            assert_pair("H RZ H vs S SX RZ SXdg Sdg", 1,
+                &[H(0), Rz(0, th), H(0)],
+                &cat(&[&[S(0), Sx(0), Rz(0, th)], &sxdg(0), &[Sdg(0)]]), false, true);
+            assert_pair("SX RZ SXdg vs HSH RZ HSdgH", 1,
+                &cat(&[&[Sx(0), Rz(0, th)], &sxdg(0)]),
+                &[H(0), S(0), H(0), Rz(0, th), H(0), Sdg(0), H(0)], false, true);
+            assert_pair("XX gadget H0H1 vs H1H0", 2,
+                &[H(0), H(1), Cx(0, 1), Rz(1, th), Cx(0, 1), H(0), H(1)],
+                &[H(1), H(0), Cx(0, 1), Rz(1, th), Cx(0, 1), H(1), H(0)], false, true);
+            assert_pair("nam XX vs ibm XX", 2,
+                &[H(0), H(1), Cx(0, 1), Rz(1, th), Cx(0, 1), H(0), H(1)],
+                &[H(0), H(1), Cx(0, 1), Rz(1, th), Cx(0, 1), H(0), H(1)], true, true);
+
+            // Negative controls: canonicalization must not over-merge.
+            assert_pair("H CX RZ CX H vs CX H RZ H CX", 2,
+                &[H(1), Cx(0, 1), Rz(1, th), Cx(0, 1), H(1)],
+                &[Cx(0, 1), H(1), Rz(1, th), H(1), Cx(0, 1)], false, false);
+            assert_pair("SX vs H Sdg H", 1, &[Sx(0)], &[H(0), Sdg(0), H(0)], false, false);
+            assert_pair("RZ(θ) vs RZ(θ+π/4)", 1, &[Rz(0, th)], &[Rz(0, th + FRAC_PI_4)], false, false);
+            assert_pair("H0 H1 vs H0", 2, &[H(0), H(1)], &[H(0)], false, false);
+        }
+
+        /// Soundness of the canonicalizing `reduce()`: after every gate of a
+        /// random circuit the path sum must still denote the dense unitary.
+        #[test]
+        fn test_gauge_canonicalization_is_sound() {
+            let mut rng = XorShift::new(0x6A06_E5C4_0000_0001);
+            let mut checks = 0u32;
+            for case in 0..2000u32 {
+                let n = 1 + rng.below(4) as usize;
+                let len = 4 + rng.below(14) as usize;
+                let gates = random_fuzz_circuit(&mut rng, n, len, 8);
+                let mut state = EvaluatedPathSum::new_id(n as u32);
+                let mut sim = DenseSim::identity(n);
+                for (i, &g) in gates.iter().enumerate() {
+                    apply_fuzz_gate(&mut state, Some(&mut sim), g, false);
+                    assert!(
+                        matrices_match_up_to_global_phase(&pathsum_to_matrix(&state), &sim.mat, TOL),
+                        "case {case}: path sum diverged from dense after gate {i} ({g:?}) of {gates:?}"
+                    );
+                    // `reduce()` must leave a fixed point of the canonicalization.
+                    let mut again = state.clone();
+                    assert!(!again.canonicalize_gauge(), "case {case}: canonicalize_gauge is not idempotent after gate {i} of {gates:?}");
+                    assert_eq!(again, state);
+                    checks += 1;
+                }
+            }
+            assert!(checks > 15000);
+        }
+
+        /// Completeness of the canonical form on three rewrite families that
+        /// are equal operators by construction: swapping adjacent gates on
+        /// disjoint qubits, re-encoding every `H` as `RZ(π/2) SX RZ(π/2)`, and
+        /// pushing an `X` through an adjacent `RZ`. Every rewrite must intern
+        /// equal to the original.
+        #[test]
+        fn test_gauge_canonicalization_completeness() {
+            let mut rng = XorShift::new(0xC0DE_CAFE_0000_0003);
+            let (mut swaps, mut ibm, mut pushes) = (0u32, 0u32, 0u32);
+            for case in 0..2000u32 {
+                let n = 2 + rng.below(3) as usize;
+                let len = 6 + rng.below(10) as usize;
+                let gates = random_fuzz_circuit(&mut rng, n, len, 5);
+                let (base, base_sim) = run_fuzz_circuit(n, &gates, false);
+
+                // (a) first adjacent pair on disjoint qubits, swapped.
+                if let Some(i) = (0..gates.len() - 1).find(|&i| !gates[i].touches(gates[i + 1])) {
+                    let mut alt = gates.clone();
+                    alt.swap(i, i + 1);
+                    let (st, sim) = run_fuzz_circuit(n, &alt, false);
+                    assert!(matrices_match_up_to_global_phase(&base_sim.mat, &sim.mat, TOL));
+                    assert_eq!(base, st, "case {case}: disjoint swap at {i} changed the canonical form\n {gates:?}");
+                    swaps += 1;
+                }
+                // (b) nam H -> ibm RZ SX RZ.
+                if gates.iter().any(|g| matches!(g, FuzzGate::H(_))) {
+                    let (st, sim) = run_fuzz_circuit(n, &gates, true);
+                    assert!(matrices_match_up_to_global_phase(&base_sim.mat, &sim.mat, TOL));
+                    assert_eq!(base, st, "case {case}: ibm H encoding changed the canonical form\n {gates:?}");
+                    ibm += 1;
+                }
+                // (c) X RZ(θ) -> RZ(-θ) X on the same qubit.
+                if let Some(i) = (0..gates.len() - 1).find(|&i| matches!((gates[i], gates[i + 1]), (FuzzGate::X(q), FuzzGate::Rz(r, _)) if q == r)) {
+                    let mut alt = gates.clone();
+                    if let (FuzzGate::X(q), FuzzGate::Rz(_, th)) = (gates[i], gates[i + 1]) {
+                        alt[i] = FuzzGate::Rz(q, -th);
+                        alt[i + 1] = FuzzGate::X(q);
+                    }
+                    let (st, sim) = run_fuzz_circuit(n, &alt, false);
+                    assert!(matrices_match_up_to_global_phase(&base_sim.mat, &sim.mat, TOL));
+                    assert_eq!(base, st, "case {case}: X-through-RZ push changed the canonical form\n {gates:?}");
+                    pushes += 1;
+                }
+            }
+            assert!(swaps > 1500 && ibm > 1000 && pushes > 30, "fuzz families under-sampled: {swaps} {ibm} {pushes}");
+        }
+
         /// `apply_phase(p, θ)` and `apply_phase(p ⊕ 1, −θ)` must intern equal.
         #[test]
         fn test_continuous_constant_fold_differential() {

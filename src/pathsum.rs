@@ -81,6 +81,9 @@ where
     }
     let mut new_state = Arc::unwrap_or_clone(state.into_inner());
     op(&mut new_state, q as usize);
+    // Affine updates (X) skip `reduce()` but may leave a constant on a row
+    // that holds a path variable; restore the canonical gauge.
+    new_state.canonicalize_gauge_after_row_op();
     PSum64::new(Arc::new(new_state))
 }
 
@@ -95,6 +98,10 @@ pub fn apply_cx_logic_64(state: PSum64, qc: i64, qt: i64) -> PSum64 {
     }
     let mut new_state = Arc::unwrap_or_clone(state.into_inner());
     new_state.apply_cx(qc as usize, qt as usize);
+    // CX is a row operation and needs no `reduce()`, but it can move a path
+    // variable into another row; restore the canonical gauge (no-op without
+    // path variables).
+    new_state.canonicalize_gauge_after_row_op();
     PSum64::new(Arc::new(new_state))
 }
 
@@ -175,6 +182,9 @@ where
     }
     let mut new_state = Arc::unwrap_or_clone(state.into_inner());
     op(&mut new_state, q as usize);
+    // Affine updates (X) skip `reduce()` but may leave a constant on a row
+    // that holds a path variable; restore the canonical gauge.
+    new_state.canonicalize_gauge_after_row_op();
     PSum128::new(Arc::new(new_state))
 }
 
@@ -189,6 +199,10 @@ pub fn apply_cx_logic_128(state: PSum128, qc: i64, qt: i64) -> PSum128 {
     }
     let mut new_state = Arc::unwrap_or_clone(state.into_inner());
     new_state.apply_cx(qc as usize, qt as usize);
+    // CX is a row operation and needs no `reduce()`, but it can move a path
+    // variable into another row; restore the canonical gauge (no-op without
+    // path variables).
+    new_state.canonicalize_gauge_after_row_op();
     PSum128::new(Arc::new(new_state))
 }
 
@@ -1232,6 +1246,60 @@ pub fn debug_pathsum_logic_128(state: PSum128) -> String {
         out.push_str(&format!("(mask={}, phase_unit={}) ", mask, phase_unit));
     }
     out
+}
+
+#[cfg(test)]
+mod gauge_ffi_tests {
+    use super::*;
+
+    /// The X / CX wrappers skip `reduce()`; they must still hand back a
+    /// canonical gauge so a CX-terminated state interns equal to the same
+    /// operator reached through a reducing gate.
+    #[test]
+    fn cx_and_x_wrappers_keep_the_gauge_canonical() {
+        // H0 H1 CX01 == CX10 H0 H1
+        let mut a = id_pathsum_logic_64(2);
+        a = apply_gate_logic_64(a, 0, |st, q| st.apply_h(q));
+        a = apply_gate_logic_64(a, 1, |st, q| st.apply_h(q));
+        a = apply_cx_logic_64(a, 0, 1);
+        let mut b = id_pathsum_logic_64(2);
+        b = apply_cx_logic_64(b, 1, 0);
+        b = apply_gate_logic_64(b, 0, |st, q| st.apply_h(q));
+        b = apply_gate_logic_64(b, 1, |st, q| st.apply_h(q));
+        assert_eq!(a, b, "CX-terminated state must be canonical");
+        assert_eq!(
+            state_fingerprint_logic_64(a.clone()),
+            state_fingerprint_logic_64(b.clone())
+        );
+
+        // H0 X0 == Z0 H0
+        let mut c = id_pathsum_logic_64(1);
+        c = apply_gate_logic_64(c, 0, |st, q| st.apply_h(q));
+        c = apply_gate_no_reduce_logic_64(c, 0, |st, q| st.apply_x(q));
+        let mut d = id_pathsum_logic_64(1);
+        d = apply_gate_logic_64(d, 0, |st, q| st.apply_z(q));
+        d = apply_gate_logic_64(d, 0, |st, q| st.apply_h(q));
+        assert_eq!(c, d, "X-terminated state must be canonical");
+
+        // Same for the 128-bit engine.
+        let mut a = id_pathsum_logic_128(2);
+        a = apply_gate_logic_128(a, 0, |st, q| st.apply_h(q));
+        a = apply_gate_logic_128(a, 1, |st, q| st.apply_h(q));
+        a = apply_cx_logic_128(a, 0, 1);
+        let mut b = id_pathsum_logic_128(2);
+        b = apply_cx_logic_128(b, 1, 0);
+        b = apply_gate_logic_128(b, 0, |st, q| st.apply_h(q));
+        b = apply_gate_logic_128(b, 1, |st, q| st.apply_h(q));
+        assert_eq!(a, b);
+
+        // Negative control: H0 H1 CX10 (= CX01 H0 H1) is a different operator.
+        let mut e = id_pathsum_logic_64(2);
+        e = apply_gate_logic_64(e, 0, |st, q| st.apply_h(q));
+        e = apply_gate_logic_64(e, 1, |st, q| st.apply_h(q));
+        e = apply_cx_logic_64(e, 1, 0);
+        assert_ne!(e, c);
+        assert_ne!(state_fingerprint_logic_64(e), state_fingerprint_logic_64(d));
+    }
 }
 
 #[cfg(test)]

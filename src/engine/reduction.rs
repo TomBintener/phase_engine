@@ -21,10 +21,624 @@ macro_rules! define_reduction_logic {
                     || continuous.parities.iter().any(|p| (p.variable_mask & v_mask) != 0)
             }
 
+            /// Substitute `v := v XOR e` everywhere (an invertible affine change
+            /// of one path variable, so the denoted operator is unchanged).
+            /// `e` must not contain `v`.
+            fn gauge_substitute(&mut self, v_mask: $primitive, e_poly: &BooleanPoly) {
+                if e_poly.terms.is_empty() { return; }
+                for poly in &mut self.out_state {
+                    if (poly.variable_mask & v_mask) != 0 && poly.terms.contains(&v_mask) {
+                        poly.add_assign(e_poly);
+                    }
+                }
+                for parity in &mut self.continuous_poly.parities {
+                    if (parity.variable_mask & v_mask) != 0 && parity.terms.contains(&v_mask) {
+                        parity.add_assign(e_poly);
+                    }
+                }
+                if (self.phase_poly.terms.iter().fold(0, |acc, t| acc | t.monomial()) & v_mask) == 0 {
+                    return;
+                }
+                // c * v * M  ->  c * (v XOR e_1 XOR ... XOR e_k) * M, exact in Z_8.
+                let mut sub_terms: SmallVec<[$primitive; $poly_capacity]> = SmallVec::new();
+                sub_terms.push(v_mask);
+                sub_terms.extend(e_poly.terms.iter().copied());
+                let mut new_terms = Vec::with_capacity(self.phase_poly.terms.len() * 2);
+                for term in self.phase_poly.terms.iter() {
+                    let mono = term.monomial();
+                    if (mono & v_mask) != 0 {
+                        Self::push_xor_phase_expansion(&mut new_terms, mono & !v_mask, &sub_terms, term.phase());
+                    } else {
+                        new_terms.push(*term);
+                    }
+                }
+                self.phase_poly.terms.clear();
+                self.phase_poly.merge_unsorted_batch(new_terms);
+            }
+
+            /// Canonical form of the path-variable gauge.
+            ///
+            /// Path variables are only defined up to invertible affine
+            /// substitutions and relabeling: `H0 H1` vs `H1 H0` allocate them in
+            /// opposite order, `SX` vs `H S H` and nam `h` vs ibm `RZ SX RZ`
+            /// leave different affine residues on the wire, and an internal
+            /// variable `v` can be traded for `1 XOR v` (negating its rotation).
+            /// This pass picks one representative:
+            ///
+            /// 1. Row echelon: scanning `out_state` rows in order, the first
+            ///    not-yet-pivoted path variable of a row becomes that row's
+            ///    pivot and the row is reduced to exactly that variable
+            ///    (`v := v XOR rest`). Rows without a fresh variable stay as
+            ///    combinations of earlier pivots and inputs.
+            /// 2. Parity pivots: the same for continuous parities, visited in
+            ///    a label-independent order (angle, then the parity's input /
+            ///    row-pivot content), so every internal variable carrying a
+            ///    rotation is a bare parity.
+            /// 3. Constant gauge: for each remaining variable decide between
+            ///    `v` and `1 XOR v` from its bare-parity remainder (smaller
+            ///    angle wins) and, on a tie, from the discrete coefficients of
+            ///    the terms containing it.
+            /// 4. Relabel: row pivots in row order, then the remaining
+            ///    variables by a label-independent signature (multiset hash of
+            ///    the phase terms and parities they occur in, seen through
+            ///    input and row-pivot bits), ties keeping the current order.
+            ///
+            /// Every step is a bijective change of summation variables, so the
+            /// denoted operator is unchanged; the pass is idempotent and a
+            /// no-op (one early return) when there are no path variables.
+            pub fn canonicalize_gauge(&mut self) -> bool {
+                let m = self.num_path_vars as usize;
+                if m == 0 { return false; }
+                let lo = self.num_qubits as usize;
+                let path_mask: $primitive = (<$primitive>::MAX.checked_shl(self.num_qubits).unwrap_or(0))
+                    & (<$primitive>::MAX.checked_shr((<$primitive>::BITS - (self.num_qubits + self.num_path_vars)) as u32).unwrap_or(0));
+                let qubit_mask: $primitive = if lo >= <$primitive>::BITS as usize { <$primitive>::MAX } else { (1 as $primitive << lo) - 1 };
+                // Gate application keeps rows and parities affine in the path
+                // variables; bail on hand-built states that are not.
+                let nonlinear = |t: &$primitive| (*t & path_mask) != 0 && (*t & (*t - 1)) != 0;
+                if self.out_state.iter().any(|p| p.terms.iter().any(nonlinear))
+                    || self.continuous_poly.parities.iter().any(|p| p.terms.iter().any(nonlinear))
+                {
+                    return false;
+                }
+
+                let mut changed = false;
+                let mut pivots: $primitive = 0;
+                let mut order: Vec<$primitive> = Vec::with_capacity(m);
+
+                // Pivot choice for a structure with several fresh variables:
+                // the one with the fewest phase-term occurrences (cheapest
+                // substitution), ties to the lowest bit.
+                let pick = |fresh: $primitive, phase_poly: &CanonicalPhasePoly| -> $primitive {
+                    if fresh & (fresh - 1) == 0 { return fresh; }
+                    let mut counts = [0u32; <$primitive>::BITS as usize];
+                    for t in phase_poly.terms.iter() {
+                        let mut pv = t.monomial() & fresh;
+                        while pv != 0 {
+                            counts[pv.trailing_zeros() as usize] += 1;
+                            pv &= pv - 1;
+                        }
+                    }
+                    let mut best = 0 as $primitive;
+                    let mut best_c = u32::MAX;
+                    let mut f = fresh;
+                    while f != 0 {
+                        let idx = f.trailing_zeros() as usize;
+                        if counts[idx] < best_c { best_c = counts[idx]; best = 1 as $primitive << idx; }
+                        f &= f - 1;
+                    }
+                    best
+                };
+
+                // 1. Row echelon.
+                for q in 0..self.out_state.len() {
+                    let fresh = self.out_state[q].variable_mask & path_mask & !pivots;
+                    if fresh == 0 { continue; }
+                    let v = pick(fresh, &self.phase_poly);
+                    pivots |= v;
+                    order.push(v);
+                    if self.out_state[q].terms.len() > 1 {
+                        let residue: SmallVec<[$primitive; $poly_capacity]> =
+                            self.out_state[q].terms.iter().copied().filter(|&t| t != v).collect();
+                        changed = true;
+                        self.gauge_substitute(v, &BooleanPoly::from_terms(residue));
+                    }
+                }
+                let row_pivots = pivots;
+                if changed {
+                    self.continuous_poly.compact();
+                    self.promote_cliffords();
+                }
+
+                // Canonical view of a mask: inputs unchanged, row pivots at their
+                // canonical positions, everything else dropped.
+                let mut canon_map = [0u32; <$primitive>::BITS as usize];
+                for (k, &v) in order.iter().enumerate() {
+                    canon_map[v.trailing_zeros() as usize] = (lo + k) as u32;
+                }
+                let canon_anchor = |mono: $primitive| -> $primitive {
+                    let mut out = mono & qubit_mask;
+                    let mut pv = mono & row_pivots;
+                    while pv != 0 {
+                        let idx = pv.trailing_zeros() as usize;
+                        out |= 1 as $primitive << canon_map[idx];
+                        pv &= pv - 1;
+                    }
+                    out
+                };
+
+                // 2. Parity pivots, smallest (angle, canonical content) first.
+                //    The angle enters as `min(r, π/2 - r)`: step 3 may still
+                //    negate remainders, and the pivot choice must not depend on
+                //    that, or the pass would not be idempotent.
+                loop {
+                    let mut best: Option<(u64, $primitive, u32, usize)> = None;
+                    for (i, parity) in self.continuous_poly.parities.iter().enumerate() {
+                        let fresh = parity.variable_mask & path_mask & !pivots;
+                        if fresh == 0 { continue; }
+                        let r = self.continuous_poly.phases[i] as u64;
+                        let key = (r.min(TICKS_PER_PI_2 - r), canon_anchor(parity.variable_mask), fresh.count_ones(), i);
+                        if best.map_or(true, |b| key < b) { best = Some(key); }
+                    }
+                    let Some((_, _, _, i)) = best else { break };
+                    let fresh = self.continuous_poly.parities[i].variable_mask & path_mask & !pivots;
+                    let v = pick(fresh, &self.phase_poly);
+                    pivots |= v;
+                    if self.continuous_poly.parities[i].terms.len() > 1 {
+                        let residue: SmallVec<[$primitive; $poly_capacity]> =
+                            self.continuous_poly.parities[i].terms.iter().copied().filter(|&t| t != v).collect();
+                        changed = true;
+                        self.gauge_substitute(v, &BooleanPoly::from_terms(residue));
+                        // Keep parities canonical (constant fold, sort) and the
+                        // split canonical before choosing the next pivot.
+                        self.continuous_poly.compact();
+                        self.promote_cliffords();
+                    }
+                }
+
+                let rest_mask = path_mask & !row_pivots;
+                if rest_mask == 0 {
+                    return self.relabel_gauge(&order, lo) || changed;
+                }
+
+                #[inline(always)]
+                fn mix(mut x: u64) -> u64 {
+                    x ^= x >> 30; x = x.wrapping_mul(0xbf58_476d_1ce4_e5b9);
+                    x ^= x >> 27; x = x.wrapping_mul(0x94d0_49bb_1331_11eb);
+                    x ^ (x >> 31)
+                }
+                #[inline(always)]
+                fn fold_bits(x: $primitive) -> u64 {
+                    (x as u64) ^ (x.checked_shr(64).unwrap_or(0) as u64).wrapping_mul(0x2545_f491_4f6c_dd1d)
+                }
+                // Multiset hash per remaining variable over the terms and
+                // parities it occurs in, seen through canonical anchors only.
+                let signatures = |this: &Self| -> [u64; <$primitive>::BITS as usize] {
+                    let mut sig = [0u64; <$primitive>::BITS as usize];
+                    for t in this.phase_poly.terms.iter() {
+                        let mono = t.monomial();
+                        let mut pv = mono & rest_mask;
+                        if pv == 0 { continue; }
+                        let h = mix(mix(fold_bits(canon_anchor(mono)) ^ 0x9e37_79b9_7f4a_7c15)
+                            ^ ((t.phase() as u64) << 56)
+                            ^ ((pv.count_ones() as u64) << 48));
+                        while pv != 0 {
+                            let idx = pv.trailing_zeros() as usize;
+                            sig[idx] = sig[idx].wrapping_add(h);
+                            pv &= pv - 1;
+                        }
+                    }
+                    for (parity, &ticks) in this.continuous_poly.parities.iter().zip(this.continuous_poly.phases.iter()) {
+                        let mut pv = parity.variable_mask & rest_mask;
+                        if pv == 0 { continue; }
+                        let h = mix(mix(fold_bits(canon_anchor(parity.variable_mask)) ^ 0x7f4a_7c15_9e37_79b9)
+                            ^ ((ticks as u64) << 32)
+                            ^ (pv.count_ones() as u64));
+                        while pv != 0 {
+                            let idx = pv.trailing_zeros() as usize;
+                            sig[idx] = sig[idx].wrapping_add(h);
+                            pv &= pv - 1;
+                        }
+                    }
+                    sig
+                };
+                let sorted_rest = |sig: &[u64; <$primitive>::BITS as usize]| -> Vec<$primitive> {
+                    let mut rest: Vec<(u64, usize)> = Vec::with_capacity(rest_mask.count_ones() as usize);
+                    let mut f = rest_mask;
+                    while f != 0 {
+                        let idx = f.trailing_zeros() as usize;
+                        rest.push((sig[idx], idx));
+                        f &= f - 1;
+                    }
+                    rest.sort_unstable();
+                    rest.into_iter().map(|(_, idx)| 1 as $primitive << idx).collect()
+                };
+
+                // 3. Constant gauge.
+                //
+                // Per-variable parity statistics in one pass: remainder of the
+                // bare parity (if any), number of parities containing the
+                // variable, and whether any parity holds two non-row variables
+                // (rare; forces the general path below).
+                let mut bare = [u64::MAX; <$primitive>::BITS as usize];
+                let mut pcount = [0u8; <$primitive>::BITS as usize];
+                let mut parity_adj: $primitive = 0;
+                for (parity, &ticks) in self.continuous_poly.parities.iter().zip(self.continuous_poly.phases.iter()) {
+                    let pv = parity.variable_mask & rest_mask;
+                    if pv == 0 { continue; }
+                    if pv & (pv - 1) != 0 { parity_adj |= pv; }
+                    if parity.terms.len() == 1 { bare[pv.trailing_zeros() as usize] = ticks as u64; }
+                    let mut f = pv;
+                    while f != 0 {
+                        pcount[f.trailing_zeros() as usize] += 1;
+                        f &= f - 1;
+                    }
+                }
+                // (a) Variables whose bare parity remainder is not exactly π/4
+                //     are decided on their own: flipping maps `r` to `π/2 - r`,
+                //     so keep the smaller remainder. This is invariant under
+                //     every other variable's gauge.
+                let mut tied: $primitive = 0;
+                let mut f = rest_mask;
+                while f != 0 {
+                    let idx = f.trailing_zeros() as usize;
+                    let v = 1 as $primitive << idx;
+                    f &= f - 1;
+                    match bare[idx] {
+                        r if r != u64::MAX && r != TICKS_PER_PI_4 => {
+                            if r > TICKS_PER_PI_4 {
+                                changed = true;
+                                self.flip_constant_gauge(v);
+                            }
+                        }
+                        _ => tied |= v,
+                    }
+                }
+                // (b) T-type / parity-free variables. Flipping one shifts the
+                //     coefficients of its neighbours, so connected components
+                //     (edges = shared terms or parities) are decided jointly by
+                //     exhaustive search over flip patterns, keeping the
+                //     lexicographically smallest component key. Isolated
+                //     variables use the closed-form rule; components larger
+                //     than the cap fall back to it greedily.
+                if tied != 0 {
+                    let mut adj = [0 as $primitive; <$primitive>::BITS as usize];
+                    for t in self.phase_poly.terms.iter() {
+                        let tv = t.monomial() & tied;
+                        if tv & (tv - 1) == 0 { continue; }
+                        let mut f = tv;
+                        while f != 0 {
+                            adj[f.trailing_zeros() as usize] |= tv;
+                            f &= f - 1;
+                        }
+                    }
+                    for parity in self.continuous_poly.parities.iter() {
+                        let tv = parity.variable_mask & tied;
+                        if tv & (tv - 1) == 0 { continue; }
+                        let mut f = tv;
+                        while f != 0 {
+                            adj[f.trailing_zeros() as usize] |= tv;
+                            f &= f - 1;
+                        }
+                    }
+                    // Isolated variables that never share a parity with another
+                    // non-row variable: one pass decides them all. At the first
+                    // coordinate (monomial order) where `c != F(c)` keep the
+                    // smaller value; `F(c) = 6·P - c` on the linear term and
+                    // `-c` elsewhere.
+                    let mut simple: $primitive = 0;
+                    let mut f = tied;
+                    while f != 0 {
+                        let idx = f.trailing_zeros() as usize;
+                        let v = 1 as $primitive << idx;
+                        f &= f - 1;
+                        if adj[idx] & !v == 0 && (parity_adj & v) == 0 { simple |= v; }
+                    }
+                    let mut undecided = simple;
+                    let mut flips: $primitive = 0;
+                    for t in self.phase_poly.terms.iter() {
+                        if undecided == 0 { break; }
+                        let mono = t.monomial();
+                        let mut pv = mono & undecided;
+                        while pv != 0 {
+                            let idx = pv.trailing_zeros() as usize;
+                            let v = 1 as $primitive << idx;
+                            pv &= pv - 1;
+                            let c = t.phase();
+                            if mono != v {
+                                // Linear coordinate absent: c = 0, F = 6·P.
+                                let f_lin = (6 * pcount[idx] as u32) % 8;
+                                if f_lin != 0 { undecided &= !v; continue; } // 0 < F: keep
+                            }
+                            let fc = if mono == v { (6 * pcount[idx] as u32 + 8 - c as u32) % 8 } else { (8 - c as u32) % 8 };
+                            if fc != c as u32 {
+                                if fc < c as u32 { flips |= v; }
+                                undecided &= !v;
+                            }
+                        }
+                    }
+                    // Variables with no terms at all: linear coordinate c = 0.
+                    // F = 6·P >= 0, so they keep their gauge.
+                    let mut f = flips;
+                    while f != 0 {
+                        let v = 1 as $primitive << f.trailing_zeros();
+                        f &= f - 1;
+                        changed = true;
+                        self.flip_constant_gauge(v);
+                    }
+
+                    const JOINT_CAP: u32 = 5;
+                    let mut remaining = tied & !simple;
+                    while remaining != 0 {
+                        // Connected component of `remaining` containing its lowest var.
+                        let mut comp = 1 as $primitive << remaining.trailing_zeros();
+                        loop {
+                            let mut grown = comp;
+                            let mut f = comp;
+                            while f != 0 {
+                                grown |= adj[f.trailing_zeros() as usize] & remaining;
+                                f &= f - 1;
+                            }
+                            if grown == comp { break; }
+                            comp = grown;
+                        }
+                        remaining &= !comp;
+                        let k = comp.count_ones();
+                        let vars: Vec<$primitive> = {
+                            let mut v = Vec::with_capacity(k as usize);
+                            let mut c = comp;
+                            while c != 0 { v.push(1 as $primitive << c.trailing_zeros()); c &= c - 1; }
+                            v
+                        };
+                        if k == 1 || k > JOINT_CAP {
+                            let sig = signatures(self);
+                            for v in sorted_rest(&sig).into_iter().filter(|v| (*v & comp) != 0) {
+                                if self.constant_gauge_wants_flip(v) {
+                                    changed = true;
+                                    self.flip_constant_gauge(v);
+                                }
+                            }
+                            continue;
+                        }
+                        // Gray-code walk over the 2^k patterns: one flip per step.
+                        let mut best_key = self.component_key(comp, rest_mask, &canon_anchor, &signatures);
+                        let mut best_pattern: u32 = 0;
+                        let mut pattern: u32 = 0;
+                        for step in 1u32..(1u32 << k) {
+                            let bit = step.trailing_zeros();
+                            pattern ^= 1 << bit;
+                            self.flip_constant_gauge(vars[bit as usize]);
+                            let key = self.component_key(comp, rest_mask, &canon_anchor, &signatures);
+                            if key < best_key {
+                                best_key = key;
+                                best_pattern = pattern;
+                            }
+                        }
+                        // Move from the last pattern to the best one.
+                        let diff = pattern ^ best_pattern;
+                        for bit in 0..k {
+                            if (diff >> bit) & 1 == 1 {
+                                self.flip_constant_gauge(vars[bit as usize]);
+                            }
+                        }
+                        if best_pattern != 0 { changed = true; }
+                    }
+                }
+
+                // 4. Relabel.
+                let sig = signatures(self);
+                order.extend(sorted_rest(&sig));
+                self.relabel_gauge(&order, lo) || changed
+            }
+
+            /// Cheap follow-up for `apply_x` / `apply_cx` on an otherwise
+            /// canonical state: those only edit `out_state`, so the gauge can
+            /// only have drifted if a row that carries a path variable is no
+            /// longer a bare pivot (or a pivot now appears in an earlier row).
+            /// Runs the full pass only in that case.
+            pub fn canonicalize_gauge_after_row_op(&mut self) -> bool {
+                if self.num_path_vars == 0 { return false; }
+                let path_mask: $primitive = (<$primitive>::MAX.checked_shl(self.num_qubits).unwrap_or(0))
+                    & (<$primitive>::MAX.checked_shr((<$primitive>::BITS - (self.num_qubits + self.num_path_vars)) as u32).unwrap_or(0));
+                let lo = self.num_qubits as usize;
+                let mut pivots: $primitive = 0;
+                let mut next_pivot = 1 as $primitive << lo;
+                let mut dirty = false;
+                for poly in &self.out_state {
+                    let fresh = poly.variable_mask & path_mask & !pivots;
+                    if fresh == 0 { continue; }
+                    // A canonical row introduces exactly one fresh variable, alone,
+                    // and canonical labels put row pivots first in row order.
+                    if poly.terms.len() != 1 || fresh != next_pivot {
+                        dirty = true;
+                        break;
+                    }
+                    pivots |= fresh;
+                    next_pivot <<= 1;
+                }
+                if !dirty { return false; }
+                self.canonicalize_gauge()
+            }
+
+            /// `v := 1 XOR v` for a non-row variable, then restore canonical
+            /// parities and the canonical discrete/continuous split. Involutive.
+            fn flip_constant_gauge(&mut self, v: $primitive) {
+                self.gauge_substitute(v, &BooleanPoly::from_terms(smallvec::smallvec![0]));
+                self.continuous_poly.compact();
+                self.promote_cliffords();
+            }
+
+            /// Label-independent rendering of everything that touches the
+            /// variables in `comp`: terms and parities with component variables
+            /// relabeled by signature rank and other non-row variables erased to
+            /// a count. Used to pick the canonical flip pattern of a component.
+            fn component_key(
+                &self,
+                comp: $primitive,
+                rest_mask: $primitive,
+                canon_anchor: &dyn Fn($primitive) -> $primitive,
+                signatures: &dyn Fn(&Self) -> [u64; <$primitive>::BITS as usize],
+            ) -> (Vec<($primitive, u8, u32)>, Vec<($primitive, u32, u32)>) {
+                let sig = signatures(self);
+                let mut ranked: Vec<(u64, usize)> = Vec::new();
+                let mut c = comp;
+                while c != 0 {
+                    let idx = c.trailing_zeros() as usize;
+                    ranked.push((sig[idx], idx));
+                    c &= c - 1;
+                }
+                ranked.sort_unstable();
+                let mut rank = [0u32; <$primitive>::BITS as usize];
+                for (k, &(_, idx)) in ranked.iter().enumerate() {
+                    rank[idx] = k as u32;
+                }
+                let lo = self.num_qubits as usize;
+                let view = |mono: $primitive| -> ($primitive, u32) {
+                    let mut out = canon_anchor(mono);
+                    let mut cv = mono & comp;
+                    while cv != 0 {
+                        let idx = cv.trailing_zeros() as usize;
+                        out |= 1 as $primitive << (lo + rank[idx] as usize);
+                        cv &= cv - 1;
+                    }
+                    (out, (mono & rest_mask & !comp).count_ones())
+                };
+                let mut terms: Vec<($primitive, u8, u32)> = self
+                    .phase_poly
+                    .terms
+                    .iter()
+                    .filter(|t| (t.monomial() & comp) != 0)
+                    .map(|t| { let (m, others) = view(t.monomial()); (m, t.phase(), others) })
+                    .collect();
+                terms.sort_unstable();
+                let mut parities: Vec<($primitive, u32, u32)> = self
+                    .continuous_poly
+                    .parities
+                    .iter()
+                    .zip(self.continuous_poly.phases.iter())
+                    .filter(|(p, _)| (p.variable_mask & comp) != 0)
+                    .map(|(p, &ticks)| { let (m, others) = view(p.variable_mask); (m, ticks, others) })
+                    .collect();
+                parities.sort_unstable();
+                (terms, parities)
+            }
+
+            /// Decide between `v` and `1 XOR v` for a variable that is not a row
+            /// pivot. Flipping negates every phase on `v`: a parity remainder `r`
+            /// becomes `π/2 - r`, and the discrete coefficient vector `c_M` of
+            /// the terms `c_M·v·M` maps to `F(c)_M = -c_M + δ_M`, where `δ_∅ = 6·P`
+            /// (`P` = parities containing `v`, each re-splits with quotient 6)
+            /// and `δ_{w} = 4·P_vw` (`P_vw` = parities containing both `v` and
+            /// `w`); higher `δ` vanish. `F` is an involution, so "prefer the
+            /// smaller of `c_M` and `F(c)_M` at the first coordinate where they
+            /// differ" is a consistent choice for an isolated variable. Used
+            /// only as the greedy fallback for oversized tied components.
+            fn constant_gauge_wants_flip(&self, v: $primitive) -> bool {
+                // Parity statistics for `v`.
+                let mut bare_remainder: Option<u64> = None;
+                let mut parity_count: u64 = 0;
+                let mut shared: Vec<($primitive, u64)> = Vec::new(); // (other var bit, #shared parities)
+                for (parity, &ticks) in self.continuous_poly.parities.iter().zip(self.continuous_poly.phases.iter()) {
+                    if (parity.variable_mask & v) == 0 { continue; }
+                    parity_count += 1;
+                    if parity.terms.len() == 1 {
+                        bare_remainder = Some(ticks as u64);
+                    }
+                    let mut others = parity.variable_mask & !v;
+                    while others != 0 {
+                        let w = 1 as $primitive << others.trailing_zeros();
+                        others &= others - 1;
+                        match shared.iter_mut().find(|(b, _)| *b == w) {
+                            Some(e) => e.1 += 1,
+                            None => shared.push((w, 1)),
+                        }
+                    }
+                }
+                if let Some(r) = bare_remainder {
+                    if r != TICKS_PER_PI_4 {
+                        return r > TICKS_PER_PI_4;
+                    }
+                }
+
+                // Coordinates: (canonical key, c, delta).
+                let mut coords: Vec<($primitive, u8, u8)> = Vec::new();
+                let mut linear: u8 = 0;
+                for t in self.phase_poly.terms.iter() {
+                    let mono = t.monomial();
+                    if (mono & v) == 0 { continue; }
+                    let m = mono & !v;
+                    if m == 0 {
+                        linear = t.phase();
+                        continue;
+                    }
+                    let delta = if m & (m - 1) == 0 {
+                        shared.iter().find(|(b, _)| *b == m).map_or(0, |(_, k)| ((4 * k) % 8) as u8)
+                    } else {
+                        0
+                    };
+                    coords.push((m, t.phase(), delta));
+                }
+                for &(w, k) in &shared {
+                    if !self.phase_poly.terms.iter().any(|t| t.monomial() == (v | w)) {
+                        coords.push((w, 0, ((4 * k) % 8) as u8));
+                    }
+                }
+                coords.push((0, linear, ((6 * parity_count) % 8) as u8));
+                coords.sort_unstable();
+                for (_, c, delta) in coords {
+                    let flipped = (delta + 8 - c) % 8;
+                    if flipped != c {
+                        return flipped < c;
+                    }
+                }
+                false
+            }
+
+            /// Relabel path variables so that `order[k]` becomes bit `lo + k`.
+            fn relabel_gauge(&mut self, order: &[$primitive], lo: usize) -> bool {
+                let identity = order.iter().enumerate().all(|(k, &v)| v == (1 as $primitive << (lo + k)));
+                if identity { return false; }
+                let mut remapping = [0u32; <$primitive>::BITS as usize];
+                for i in 0..lo { remapping[i] = i as u32; }
+                for (k, &v) in order.iter().enumerate() {
+                    remapping[v.trailing_zeros() as usize] = (lo + k) as u32;
+                }
+                let remap_mono = |mono: $primitive| -> $primitive {
+                    let mut new_mono = 0 as $primitive;
+                    let mut temp = mono;
+                    while temp != 0 {
+                        let bit_idx = temp.trailing_zeros() as usize;
+                        new_mono |= 1 as $primitive << remapping[bit_idx];
+                        temp &= temp - 1;
+                    }
+                    new_mono
+                };
+                for poly in &mut self.out_state {
+                    let new_terms = poly.terms.iter().map(|t| remap_mono(*t)).collect();
+                    *poly = BooleanPoly::from_terms(new_terms);
+                }
+                for parity in &mut self.continuous_poly.parities {
+                    for t in &mut parity.terms { *t = remap_mono(*t); }
+                    parity.terms.sort_unstable();
+                    parity.variable_mask = parity.terms.iter().fold(0, |acc, &x| acc | x);
+                }
+                self.continuous_poly.compact();
+                let mut new_phase_terms = Vec::with_capacity(self.phase_poly.terms.len());
+                for term in &self.phase_poly.terms {
+                    new_phase_terms.push(PackedPhaseTerm::create(remap_mono(term.monomial()), term.phase()));
+                }
+                self.phase_poly.terms.clear();
+                self.phase_poly.merge_unsorted_batch(new_phase_terms);
+                true
+            }
+
             pub fn reduce(&mut self) {
                 let mut overall_changed = true;
                 while overall_changed {
                     overall_changed = false;
+                    // Canonical gauge first: it can free variables that the
+                    // elimination rules below then integrate out.
+                    self.canonicalize_gauge();
                     let mut dead_vars = 0 as $primitive;
                     let original_num_path_vars = self.num_path_vars;
                     let path_var_mask = if original_num_path_vars == 0 {
@@ -401,6 +1015,12 @@ macro_rules! define_reduction_logic {
                         if self.promote_cliffords() {
                             overall_changed = true;
                         }
+                    }
+                    // Pivot substitutions `u := E` rewrite rows that held `u`,
+                    // which can leave affine residues: run one more iteration so
+                    // the gauge is canonical again.
+                    if dead_vars != 0 {
+                        overall_changed = true;
                     }
                 }
             }
