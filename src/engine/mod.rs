@@ -9,6 +9,14 @@ use smallvec::SmallVec;
 use std::cmp::Ordering;
 use std::f64::consts::TAU;
 use std::hash::Hash;
+use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
+
+/// Unique tokens for H/SX capacity overflow. Never zero; never reused.
+static NEXT_OVERFLOW_ID: AtomicU64 = AtomicU64::new(1);
+
+pub(crate) fn next_overflow_id() -> u64 {
+    NEXT_OVERFLOW_ID.fetch_add(1, AtomicOrdering::Relaxed)
+}
 
 #[allow(dead_code)]
 const EPSILON: f64 = 1e-10;

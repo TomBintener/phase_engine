@@ -87,6 +87,7 @@ macro_rules! define_reduction_logic {
             /// denoted operator is unchanged; the pass is idempotent and a
             /// no-op (one early return) when there are no path variables.
             pub fn canonicalize_gauge(&mut self) -> bool {
+                if self.is_overflowed() { return false; }
                 let m = self.num_path_vars as usize;
                 if m == 0 { return false; }
                 let lo = self.num_qubits as usize;
@@ -437,6 +438,7 @@ macro_rules! define_reduction_logic {
             /// longer a bare pivot (or a pivot now appears in an earlier row).
             /// Runs the full pass only in that case.
             pub fn canonicalize_gauge_after_row_op(&mut self) -> bool {
+                if self.is_overflowed() { return false; }
                 if self.num_path_vars == 0 { return false; }
                 let path_mask: $primitive = (<$primitive>::MAX.checked_shl(self.num_qubits).unwrap_or(0))
                     & (<$primitive>::MAX.checked_shr((<$primitive>::BITS - (self.num_qubits + self.num_path_vars)) as u32).unwrap_or(0));
@@ -633,6 +635,7 @@ macro_rules! define_reduction_logic {
             }
 
             pub fn reduce(&mut self) {
+                if self.is_overflowed() { return; }
                 let mut overall_changed = true;
                 while overall_changed {
                     overall_changed = false;

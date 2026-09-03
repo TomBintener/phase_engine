@@ -107,6 +107,7 @@ macro_rules! define_tests_logic {
             assert_eq!(state.out_state[0].terms.as_slice(), &[1 << 0]);
             assert_eq!(state.out_state[1].terms.as_slice(), &[1 << 1]);
             assert_eq!(state.out_state[2].terms.as_slice(), &[1 << 2]);
+            assert_eq!(state.overflow_id, 0);
         }
 
         #[test]
@@ -612,6 +613,41 @@ macro_rules! define_tests_logic {
             b.apply_h(1);
             b.reduce();
             assert_eq!(a, b, "H0 H1 CX01 and CX10 H0 H1 must intern equal");
+        }
+
+        #[test]
+        fn test_capacity_overflow_is_unique_and_silent() {
+            // Usable variable bits are BITS-3 (packed discrete phase uses the top 3).
+            let cap = <$primitive>::BITS - 3;
+            let mut at_cap = EvaluatedPathSum::new_id(1);
+            at_cap.num_path_vars = cap - 1;
+            let before = at_cap.clone();
+
+            at_cap.apply_h(0);
+            assert!(at_cap.is_overflowed(), "H at capacity must set overflow_id");
+            assert_eq!(at_cap.num_path_vars, before.num_path_vars, "H must not allocate");
+            assert_eq!(at_cap.out_state, before.out_state, "H must not rewrite the state");
+            assert_ne!(&at_cap, &before, "overflowed state must not intern-equal the pre-H state");
+
+            let mut other = before.clone();
+            other.apply_sx(0);
+            assert!(other.is_overflowed());
+            assert_ne!(other.overflow_id, at_cap.overflow_id, "overflow tokens must be unique");
+            assert_ne!(&at_cap, &other);
+
+            let snap = at_cap.clone();
+            at_cap.apply_x(0);
+            at_cap.apply_z(0);
+            at_cap.apply_rz(0, 0.3);
+            at_cap.reduce();
+            at_cap.canonicalize_gauge();
+            assert_eq!(at_cap, snap, "later ops on an overflowed state must be no-ops");
+
+            let mut ok = EvaluatedPathSum::new_id(1);
+            ok.apply_h(0);
+            ok.reduce();
+            assert!(!ok.is_overflowed(), "below-cap H must stay well-formed");
+            assert_sound_unequal(&ok, &at_cap);
         }
     }
 }

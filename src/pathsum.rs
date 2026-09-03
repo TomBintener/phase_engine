@@ -356,6 +356,9 @@ pub fn synthesize_steiner_logic_64(
     if gate_count <= 2 {
         return "None".to_string();
     }
+    if state.is_overflowed() {
+        return "None".to_string();
+    }
     if !continuous_parities_are_qubit_linear_64(&state) {
         return "None".to_string();
     }
@@ -517,6 +520,9 @@ pub fn synthesize_pmh_logic_64(state: PSum64, gate_count: i64) -> String {
     if gate_count <= 2 {
         return "None".to_string();
     }
+    if state.is_overflowed() {
+        return "None".to_string();
+    }
 
     // 1. Purity Check
     // 1a. No discrete or continuous phase polynomial terms (rules out Z/S/T/H/Rz gates).
@@ -607,6 +613,9 @@ pub fn synthesize_gray_logic_64(
     if gate_count <= 2 {
         return "None".to_string();
     }
+    if state.is_overflowed() {
+        return "None".to_string();
+    }
     if !continuous_parities_are_qubit_linear_64(&state) {
         return "None".to_string();
     }
@@ -675,6 +684,9 @@ pub fn synthesize_steiner_logic_128(
     rz_weight: i64,
 ) -> String {
     if gate_count <= 2 {
+        return "None".to_string();
+    }
+    if state.is_overflowed() {
         return "None".to_string();
     }
     if !continuous_parities_are_qubit_linear_128(&state) {
@@ -844,6 +856,9 @@ pub fn synthesize_gray_logic_128(
     if gate_count <= 2 {
         return "None".to_string();
     }
+    if state.is_overflowed() {
+        return "None".to_string();
+    }
     if !continuous_parities_are_qubit_linear_128(&state) {
         return "None".to_string();
     }
@@ -907,6 +922,9 @@ pub fn synthesize_gray_logic_128(
 
 pub fn synthesize_pmh_logic_128(state: PSum128, gate_count: i64) -> String {
     if gate_count <= 2 {
+        return "None".to_string();
+    }
+    if state.is_overflowed() {
         return "None".to_string();
     }
     // 1. Purity Check
@@ -1608,6 +1626,24 @@ mod gray_tests {
             synthesize_steiner_logic_128(ps128, 1_000, i64::MAX, String::new(), 50, 1),
             "None"
         );
+    }
+
+    #[test]
+    fn overflowed_state_refuses_synthesis() {
+        let mut state = engine_64::EvaluatedPathSum::new_id(1);
+        state.num_path_vars = 60;
+        state.apply_h(0);
+        assert!(state.is_overflowed());
+        let ps = PSum64::new(Arc::new(state));
+        assert_eq!(
+            synthesize_gray_logic_64(ps.clone(), 1_000, i64::MAX, 50, 1),
+            "None"
+        );
+        assert_eq!(
+            synthesize_steiner_logic_64(ps.clone(), 1_000, i64::MAX, String::new(), 50, 1),
+            "None"
+        );
+        assert_eq!(synthesize_pmh_logic_64(ps, 1_000), "None");
     }
 
     #[test]

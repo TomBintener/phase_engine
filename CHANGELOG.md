@@ -2,6 +2,7 @@
 
 ## [Unreleased] - ReleaseDate
 
+- PathSum: H/SX capacity overflow sets a unique `overflow_id` and leaves the state unchanged instead of `assert!`. Overflowed states never intern-equal a well-formed state or each other; later gates, `reduce()`, and synthesis are no-ops / `"None"`.
 - PathSum: Steiner and Gray refuse a state when a continuous parity is not a linear XOR of input qubits (path-variable bits or product monomials). Previously Steiner pushed `variable_mask` and dropped those bits, attaching the angle to leftover qubit wires.
 - PathSum: fold constant-1 continuous parities (global phase) so interned Eq matches `X RZ(θ) ≡ RZ(−θ) X`.
 - PathSum: continuous phases are integer lattice ticks (2^29 per turn) instead of `f64` snapped to 1e-8, so π/4 multiples, negation and modular sums are exact. `extract_cliffords` promotes only the even π/4 quotient and keeps `θ mod π/2` continuous (T/Tdg go through the parity table like `RZ(π/4)`), which makes the discrete/continuous split a function of each parity's total angle: `RZ(θ) T`, `T RZ(θ)` and `RZ(θ+π/4)` now intern equal, including on multi-qubit parities. Host fingerprints print ticks.
