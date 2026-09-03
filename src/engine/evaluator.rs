@@ -118,14 +118,15 @@ macro_rules! define_evaluator_logic {
                 self.push_phase_expansion(&terms, 6);
             }
 
+            /// T goes through the parity table like `RZ(π/4)`: odd lattice
+            /// quotients live there (see `extract_cliffords`), so `T` and
+            /// `RZ(π/4)` must take the same path to intern equal.
             pub fn apply_t(&mut self, q: usize) {
-                let terms = self.out_state[q].terms.clone();
-                self.push_phase_expansion(&terms, 1);
+                self.apply_rz_ticks(q, TICKS_PER_PI_4 as u32);
             }
 
             pub fn apply_tdg(&mut self, q: usize) {
-                let terms = self.out_state[q].terms.clone();
-                self.push_phase_expansion(&terms, 7);
+                self.apply_rz_ticks(q, (7 * TICKS_PER_PI_4) as u32);
             }
 
             pub fn apply_sx(&mut self, q: usize) {
@@ -171,31 +172,23 @@ macro_rules! define_evaluator_logic {
             }
 
             pub fn apply_rz(&mut self, q: usize, theta: f64) {
+                self.apply_rz_ticks(q, angle_to_ticks(theta));
+            }
+
+            /// `RZ` by an exact number of lattice ticks on the current wire
+            /// polynomial of `q`, followed by promotion of the even π/4
+            /// quotient into the discrete polynomial.
+            pub fn apply_rz_ticks(&mut self, q: usize, ticks: u32) {
                 let current_parity = self.out_state[q].clone();
-                self.continuous_poly.apply_phase(current_parity, theta);
+                self.continuous_poly.apply_ticks(current_parity, ticks);
                 self.promote_cliffords();
             }
 
-            /// Equality key for host-side fingerprint strings: every field
-            /// `PartialEq` / `Hash` intern on, with continuous phases as the
-            /// same 1e8 snap ticks (not raw `f64` Debug, which can distinguish
-            /// states `state_union` would merge).
+            /// Equality key for host-side fingerprint strings: exactly the
+            /// fields `PartialEq` / `Hash` intern on. Continuous phases are
+            /// integer lattice ticks, so the Debug dump is already the key.
             pub fn eq_fingerprint(&self) -> String {
-                let phase_ticks: Vec<i64> = self
-                    .continuous_poly
-                    .phases
-                    .iter()
-                    .map(|&p| (p * SNAP_PRECISION).round() as i64)
-                    .collect();
-                format!(
-                    "EvaluatedPathSum {{ num_qubits: {}, num_path_vars: {}, out_state: {:?}, phase_poly: {:?}, continuous_poly: ContinuousPhasePoly {{ parities: {:?}, phases: {:?} }} }}",
-                    self.num_qubits,
-                    self.num_path_vars,
-                    self.out_state,
-                    self.phase_poly,
-                    self.continuous_poly.parities,
-                    phase_ticks
-                )
+                format!("{:?}", self)
             }
         }
     }

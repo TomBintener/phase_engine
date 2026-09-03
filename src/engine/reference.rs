@@ -64,13 +64,13 @@ macro_rules! define_reference_logic {
                             phase += term.phase() as f64 * std::f64::consts::FRAC_PI_4;
                         }
                     }
-                    for (parity, theta) in state
+                    for (parity, ticks) in state
                         .continuous_poly
                         .parities
                         .iter()
                         .zip(state.continuous_poly.phases.iter())
                     {
-                        if eval_bool_poly(parity, assign) { phase += *theta; }
+                        if eval_bool_poly(parity, assign) { phase += ticks_to_angle(*ticks); }
                     }
                     let mut out = 0usize;
                     for q in 0..n {

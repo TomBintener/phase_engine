@@ -339,7 +339,7 @@ pub fn synthesize_steiner_logic_64(
     }
     for (i, p) in state.continuous_poly.parities.iter().enumerate() {
         let mask = p.variable_mask;
-        let angle = state.continuous_poly.phases[i];
+        let angle = crate::engine::ticks_to_angle(state.continuous_poly.phases[i]);
         parities.push((mask, angle));
     }
     // Merge duplicate parity masks (Mobius + continuous can collide).
@@ -585,7 +585,7 @@ pub fn synthesize_gray_logic_64(
         if p.terms.iter().any(|&t| t == 0 || t.count_ones() != 1) {
             return "None".to_string();
         }
-        parities.push((p.variable_mask, state.continuous_poly.phases[i]));
+        parities.push((p.variable_mask, crate::engine::ticks_to_angle(state.continuous_poly.phases[i])));
     }
 
     let mut monomials: Vec<(u64, f64)> = Vec::new();
@@ -659,7 +659,7 @@ pub fn synthesize_steiner_logic_128(
     }
     for (i, p) in state.continuous_poly.parities.iter().enumerate() {
         let mask = p.variable_mask;
-        let angle = state.continuous_poly.phases[i];
+        let angle = crate::engine::ticks_to_angle(state.continuous_poly.phases[i]);
         parities.push((mask, angle));
     }
     {
@@ -824,7 +824,7 @@ pub fn synthesize_gray_logic_128(
         if p.terms.iter().any(|&t| t == 0 || t.count_ones() != 1) {
             return "None".to_string();
         }
-        parities.push((p.variable_mask, state.continuous_poly.phases[i]));
+        parities.push((p.variable_mask, crate::engine::ticks_to_angle(state.continuous_poly.phases[i])));
     }
 
     let mut monomials: Vec<(u128, f64)> = Vec::new();
@@ -1194,7 +1194,12 @@ pub fn debug_pathsum_logic_64(state: PSum64) -> String {
     ));
     out.push_str(&format!(
         "Continuous Phases: {:?}\n",
-        state.continuous_poly.phases
+        state
+            .continuous_poly
+            .phases
+            .iter()
+            .map(|&t| crate::engine::ticks_to_angle(t))
+            .collect::<Vec<f64>>()
     ));
     out.push_str("Phase Poly Terms: ");
     for term in &state.phase_poly.terms {
@@ -1213,7 +1218,12 @@ pub fn debug_pathsum_logic_128(state: PSum128) -> String {
     ));
     out.push_str(&format!(
         "Continuous Phases: {:?}\n",
-        state.continuous_poly.phases
+        state
+            .continuous_poly
+            .phases
+            .iter()
+            .map(|&t| crate::engine::ticks_to_angle(t))
+            .collect::<Vec<f64>>()
     ));
     out.push_str("Phase Poly Terms: ");
     for term in &state.phase_poly.terms {
@@ -1229,36 +1239,36 @@ mod fingerprint_tests {
     use super::*;
     use crate::engine::engine_64;
 
-    /// `state_union` / interned `PartialEq` snap continuous phases to 1e8
-    /// ticks. The host fingerprint must follow that lattice, not raw `f64`
-    /// Debug, so pre-pass string compare matches in-cycle merge.
+    /// `state_union` / interned `PartialEq` compare continuous phases on the
+    /// integer tick lattice. The host fingerprint must follow that lattice,
+    /// not raw `f64` angles, so pre-pass string compare matches in-cycle merge.
     #[test]
     fn fingerprint_matches_snapped_eq_not_raw_debug() {
+        use crate::engine::{TICKS_PER_TURN, ticks_to_angle};
+        let tick = std::f64::consts::TAU / TICKS_PER_TURN as f64;
+        // An angle 0.3 ticks above a lattice point: +0.15 ticks rounds to the
+        // same tick, +0.4 ticks crosses to the next one.
+        let base = ticks_to_angle(31_615_000) + 0.3 * tick;
+
         let mut a = engine_64::EvaluatedPathSum::new_id(1);
-        a.apply_rz(0, 0.37);
+        a.apply_rz(0, base);
         assert!(
             !a.continuous_poly.phases.is_empty(),
-            "0.37 is not a π/4 multiple; it must stay in the continuous poly"
+            "the angle is not a π/4 multiple; it must stay in the continuous poly"
         );
 
-        let mut b = a.clone();
-        b.continuous_poly.phases[0] += 0.4 / SNAP_PRECISION;
-
+        let mut b = engine_64::EvaluatedPathSum::new_id(1);
+        b.apply_rz(0, base + 0.15 * tick);
         assert_eq!(
             a, b,
-            "perturbation inside the same snap tick must be PartialEq"
-        );
-        assert_ne!(
-            format!("{:?}", a.continuous_poly.phases[0]),
-            format!("{:?}", b.continuous_poly.phases[0]),
-            "raw f64 Debug should still distinguish the perturbation"
+            "perturbation inside the same lattice tick must be PartialEq"
         );
 
         let fp_a = state_fingerprint_logic_64(PSum64::new(Arc::new(a.clone())));
         let fp_b = state_fingerprint_logic_64(PSum64::new(Arc::new(b)));
         assert_eq!(
             fp_a, fp_b,
-            "snap-equal states must share the host fingerprint"
+            "tick-equal states must share the host fingerprint"
         );
         assert!(
             fp_a.contains("num_qubits: 1"),
@@ -1266,16 +1276,16 @@ mod fingerprint_tests {
         );
         assert!(
             !fp_a.contains("phases: [0."),
-            "fingerprint must emit snap ticks, not raw f64 Debug: {fp_a}"
+            "fingerprint must emit lattice ticks, not raw f64 angles: {fp_a}"
         );
 
-        let mut c = a.clone();
-        c.continuous_poly.phases[0] += 0.6 / SNAP_PRECISION;
-        assert_ne!(a, c, "crossing a snap tick must change PartialEq");
+        let mut c = engine_64::EvaluatedPathSum::new_id(1);
+        c.apply_rz(0, base + 0.4 * tick);
+        assert_ne!(a, c, "crossing a lattice tick must change PartialEq");
         assert_ne!(
             state_fingerprint_logic_64(PSum64::new(Arc::new(a))),
             state_fingerprint_logic_64(PSum64::new(Arc::new(c))),
-            "crossing a snap tick must change the host fingerprint"
+            "crossing a lattice tick must change the host fingerprint"
         );
     }
 }

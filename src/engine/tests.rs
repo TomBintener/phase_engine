@@ -52,7 +52,7 @@ macro_rules! define_tests_logic {
             poly.apply_phase(parity.clone(), 1.0);
             poly.apply_phase(parity.clone(), 0.5);
             assert_eq!(poly.parities.len(), 1);
-            assert!((poly.phases[0] - 1.5).abs() < EPSILON);
+            assert!((ticks_to_angle(poly.phases[0]) - 1.5).abs() < 1e-7);
         }
 
         #[test]
@@ -89,9 +89,15 @@ macro_rules! define_tests_logic {
             state.reduce();
             assert_eq!(state.num_path_vars, 0);
             assert_eq!(state.out_state[0].terms.as_slice(), &[1]);
-            assert_eq!(state.phase_poly.terms.len(), 1);
-            assert_eq!(state.phase_poly.terms[0].monomial(), 1);
-            assert_eq!(state.phase_poly.terms[0].phase(), 1); // T is 1 unit of pi/4
+            // Odd lattice quotients stay in the parity table: one T on x0.
+            assert!(state.phase_poly.terms.is_empty());
+            assert_eq!(state.continuous_poly.parities.len(), 1);
+            assert_eq!(state.continuous_poly.parities[0].terms.as_slice(), &[1]);
+            assert_eq!(state.continuous_poly.phases[0] as u64, TICKS_PER_PI_4);
+            let mut t = EvaluatedPathSum::new_id(1);
+            t.apply_t(0);
+            t.reduce();
+            assert_eq!(state, t);
         }
 
         #[test]
@@ -140,9 +146,16 @@ macro_rules! define_tests_logic {
             state.apply_z(0); // Phase 4
             state.apply_s(0); // Phase 2
             state.apply_t(0); // Phase 1
-            // 4 + 2 + 1 = 7 phase accumulation on x0
-            let expected_phase = PackedPhaseTerm::create(1 as $primitive << 0, 7);
+            // Total 7π/4 on x0 splits into the even quotient 6 (discrete) and
+            // the remainder π/4 (parity table).
+            let expected_phase = PackedPhaseTerm::create(1 as $primitive << 0, 6);
             assert_eq!(state.phase_poly.terms.as_slice(), &[expected_phase]);
+            assert_eq!(state.continuous_poly.parities.len(), 1);
+            assert_eq!(state.continuous_poly.phases[0] as u64, TICKS_PER_PI_4);
+            // Same split as a single RZ(7π/4).
+            let mut rz = EvaluatedPathSum::new_id(1);
+            rz.apply_rz(0, 7.0 * std::f64::consts::FRAC_PI_4);
+            assert_eq!(state, rz);
         }
 
         #[test]
@@ -173,9 +186,13 @@ macro_rules! define_tests_logic {
             let mut state = EvaluatedPathSum::new_id(1);
             state.apply_sdg(0); // Phase -2 (or 6 mod 8)
             state.apply_tdg(0); // Phase -1 (or 7 mod 8)
-            // 6 + 7 = 13 mod 8 = 5
-            let expected_phase = PackedPhaseTerm::create(1 as $primitive << 0, 5);
+            // 6 + 7 = 13 mod 8 = 5 = 4 (discrete, even) + 1 (parity table).
+            let expected_phase = PackedPhaseTerm::create(1 as $primitive << 0, 4);
             assert_eq!(state.phase_poly.terms.as_slice(), &[expected_phase]);
+            assert_eq!(state.continuous_poly.phases[0] as u64, TICKS_PER_PI_4);
+            let mut rz = EvaluatedPathSum::new_id(1);
+            rz.apply_rz(0, 5.0 * std::f64::consts::FRAC_PI_4);
+            assert_eq!(state, rz);
         }
 
         #[test]
@@ -261,15 +278,20 @@ macro_rules! define_tests_logic {
             assert_eq!(state.phase_poly.terms.len(), 0);
             assert_eq!(state.continuous_poly.parities.len(), 1);
 
-            // Apply another half a T gate (pi/8)
+            // Apply another half a T gate (pi/8): π/4 is an odd lattice
+            // quotient and stays in the table.
             state.apply_rz(0, std::f64::consts::FRAC_PI_8);
-            
-            // They accumulate to pi/4, which triggers promote_cliffords (T gate)
-            // The continuous reservoir should be emptied of this term
+            assert_eq!(state.phase_poly.terms.len(), 0);
+            assert_eq!(state.continuous_poly.parities.len(), 1);
             assert_eq!(state.continuous_poly.extract_cliffords().len(), 0);
-            // Discrete engine now holds the T gate (phase 1)
+
+            // Two more: the total π/2 is promoted (S gate, phase 2) and the
+            // continuous reservoir is emptied of this term.
+            state.apply_rz(0, std::f64::consts::FRAC_PI_8);
+            state.apply_rz(0, std::f64::consts::FRAC_PI_8);
+            assert!(state.continuous_poly.parities.is_empty());
             assert_eq!(state.phase_poly.terms.len(), 1);
-            assert_eq!(state.phase_poly.terms[0].phase(), 1);
+            assert_eq!(state.phase_poly.terms[0].phase(), 2);
         }
 
         #[test]
@@ -377,8 +399,15 @@ macro_rules! define_tests_logic {
             assert_eq!(s1, s2);
             assert_eq!(s1.continuous_poly.parities.len(), 1);
             assert!(!s1.continuous_poly.parities[0].terms.contains(&0));
-            let expected = (-0.1_f64).rem_euclid(2.0 * std::f64::consts::PI);
-            assert!((s1.continuous_poly.phases[0] - expected).abs() < 1e-7);
+            // -0.1 ≡ 2π - 0.1 = 3π/2 (promoted, phase 6) + remainder.
+            let expected = (-0.1_f64).rem_euclid(2.0 * std::f64::consts::PI) - 6.0 * std::f64::consts::FRAC_PI_4;
+            assert!((ticks_to_angle(s1.continuous_poly.phases[0]) - expected).abs() < 1e-7);
+            assert_eq!(s1.phase_poly.terms.as_slice(), &[PackedPhaseTerm::create(1, 6)]);
+            // Same phase content as a bare RZ(-0.1) (which lacks the X flip).
+            let mut s3 = EvaluatedPathSum::new_id(1);
+            s3.apply_rz(0, -0.1);
+            assert_eq!(s1.continuous_poly, s3.continuous_poly);
+            assert_eq!(s1.phase_poly, s3.phase_poly);
         }
 
         #[test]
