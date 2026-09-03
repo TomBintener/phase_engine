@@ -1555,6 +1555,42 @@ mod fingerprint_tests {
         assert!(fingerprint_ops_logic_64(1, &ops).is_some());
         let _ = ops.pop();
     }
+
+    #[test]
+    fn fingerprint_ops_sixty_qubit_second_h_overflows() {
+        // 60 qubits + 1 live path var is the 64-bit cap. The first H allocates;
+        // the second H must overflow and still return a string.
+        let ops = [FingerprintOp::H(0), FingerprintOp::H(1)];
+        let overflowed = fingerprint_ops_logic_64(60, &ops).expect("supported ops");
+        let again = fingerprint_ops_logic_64(60, &ops).expect("supported ops");
+        let well = fingerprint_ops_logic_64(2, &ops).expect("supported ops");
+        let identity = fingerprint_ops_logic_64(60, &[]).expect("empty ops");
+        assert_ne!(overflowed, well);
+        assert_ne!(overflowed, identity);
+        assert_ne!(
+            overflowed, again,
+            "overflow tokens must be unique across calls"
+        );
+        assert_ne!(
+            overflow_id_in(&overflowed),
+            0,
+            "overflow fingerprint must carry a nonzero token: {overflowed}"
+        );
+        assert_eq!(
+            overflow_id_in(&well),
+            0,
+            "below-cap H H must stay well-formed: {well}"
+        );
+    }
+
+    fn overflow_id_in(fp: &str) -> u64 {
+        let key = "overflow_id: ";
+        let start = fp.find(key).unwrap_or_else(|| panic!("{fp}")) + key.len();
+        let digits = fp[start..]
+            .find(|c: char| !c.is_ascii_digit())
+            .unwrap_or(fp.len() - start);
+        fp[start..start + digits].parse().unwrap()
+    }
 }
 
 #[cfg(test)]
