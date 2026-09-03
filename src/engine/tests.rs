@@ -52,7 +52,7 @@ macro_rules! define_tests_logic {
             poly.apply_phase(parity.clone(), 1.0);
             poly.apply_phase(parity.clone(), 0.5);
             assert_eq!(poly.parities.len(), 1);
-            assert!((poly.phases[0] - 1.5).abs() < EPSILON);
+            assert!((ticks_to_angle(poly.phases[0]) - 1.5).abs() < 1e-7);
         }
 
         #[test]
@@ -89,9 +89,15 @@ macro_rules! define_tests_logic {
             state.reduce();
             assert_eq!(state.num_path_vars, 0);
             assert_eq!(state.out_state[0].terms.as_slice(), &[1]);
-            assert_eq!(state.phase_poly.terms.len(), 1);
-            assert_eq!(state.phase_poly.terms[0].monomial(), 1);
-            assert_eq!(state.phase_poly.terms[0].phase(), 1); // T is 1 unit of pi/4
+            // Odd lattice quotients stay in the parity table: one T on x0.
+            assert!(state.phase_poly.terms.is_empty());
+            assert_eq!(state.continuous_poly.parities.len(), 1);
+            assert_eq!(state.continuous_poly.parities[0], 1 as $primitive);
+            assert_eq!(state.continuous_poly.phases[0] as u64, TICKS_PER_PI_4);
+            let mut t = EvaluatedPathSum::new_id(1);
+            t.apply_t(0);
+            t.reduce();
+            assert_eq!(state, t);
         }
 
         #[test]
@@ -101,6 +107,7 @@ macro_rules! define_tests_logic {
             assert_eq!(state.out_state[0].terms.as_slice(), &[1 << 0]);
             assert_eq!(state.out_state[1].terms.as_slice(), &[1 << 1]);
             assert_eq!(state.out_state[2].terms.as_slice(), &[1 << 2]);
+            assert_eq!(state.overflow_id, 0);
         }
 
         #[test]
@@ -140,9 +147,16 @@ macro_rules! define_tests_logic {
             state.apply_z(0); // Phase 4
             state.apply_s(0); // Phase 2
             state.apply_t(0); // Phase 1
-            // 4 + 2 + 1 = 7 phase accumulation on x0
-            let expected_phase = PackedPhaseTerm::create(1 as $primitive << 0, 7);
+            // Total 7π/4 on x0 splits into the even quotient 6 (discrete) and
+            // the remainder π/4 (parity table).
+            let expected_phase = PackedPhaseTerm::create(1 as $primitive << 0, 6);
             assert_eq!(state.phase_poly.terms.as_slice(), &[expected_phase]);
+            assert_eq!(state.continuous_poly.parities.len(), 1);
+            assert_eq!(state.continuous_poly.phases[0] as u64, TICKS_PER_PI_4);
+            // Same split as a single RZ(7π/4).
+            let mut rz = EvaluatedPathSum::new_id(1);
+            rz.apply_rz(0, 7.0 * std::f64::consts::FRAC_PI_4);
+            assert_eq!(state, rz);
         }
 
         #[test]
@@ -173,9 +187,13 @@ macro_rules! define_tests_logic {
             let mut state = EvaluatedPathSum::new_id(1);
             state.apply_sdg(0); // Phase -2 (or 6 mod 8)
             state.apply_tdg(0); // Phase -1 (or 7 mod 8)
-            // 6 + 7 = 13 mod 8 = 5
-            let expected_phase = PackedPhaseTerm::create(1 as $primitive << 0, 5);
+            // 6 + 7 = 13 mod 8 = 5 = 4 (discrete, even) + 1 (parity table).
+            let expected_phase = PackedPhaseTerm::create(1 as $primitive << 0, 4);
             assert_eq!(state.phase_poly.terms.as_slice(), &[expected_phase]);
+            assert_eq!(state.continuous_poly.phases[0] as u64, TICKS_PER_PI_4);
+            let mut rz = EvaluatedPathSum::new_id(1);
+            rz.apply_rz(0, 5.0 * std::f64::consts::FRAC_PI_4);
+            assert_eq!(state, rz);
         }
 
         #[test]
@@ -228,9 +246,7 @@ macro_rules! define_tests_logic {
             poly.compact();
 
             assert_eq!(poly.parities.len(), 1);
-            let mut expected_terms = smallvec![x0, x1, v];
-            expected_terms.sort_unstable();
-            assert_eq!(poly.parities[0], BooleanPoly::from_terms(expected_terms));
+            assert_eq!(poly.parities[0], x0 | x1 | v);
         }
 
         #[test]
@@ -261,15 +277,20 @@ macro_rules! define_tests_logic {
             assert_eq!(state.phase_poly.terms.len(), 0);
             assert_eq!(state.continuous_poly.parities.len(), 1);
 
-            // Apply another half a T gate (pi/8)
+            // Apply another half a T gate (pi/8): π/4 is an odd lattice
+            // quotient and stays in the table.
             state.apply_rz(0, std::f64::consts::FRAC_PI_8);
-            
-            // They accumulate to pi/4, which triggers promote_cliffords (T gate)
-            // The continuous reservoir should be emptied of this term
+            assert_eq!(state.phase_poly.terms.len(), 0);
+            assert_eq!(state.continuous_poly.parities.len(), 1);
             assert_eq!(state.continuous_poly.extract_cliffords().len(), 0);
-            // Discrete engine now holds the T gate (phase 1)
+
+            // Two more: the total π/2 is promoted (S gate, phase 2) and the
+            // continuous reservoir is emptied of this term.
+            state.apply_rz(0, std::f64::consts::FRAC_PI_8);
+            state.apply_rz(0, std::f64::consts::FRAC_PI_8);
+            assert!(state.continuous_poly.parities.is_empty());
             assert_eq!(state.phase_poly.terms.len(), 1);
-            assert_eq!(state.phase_poly.terms[0].phase(), 1);
+            assert_eq!(state.phase_poly.terms[0].phase(), 2);
         }
 
         #[test]
@@ -372,26 +393,60 @@ macro_rules! define_tests_logic {
             s2.apply_x(0);
             s2.reduce();
 
-            assert_eq!(s1.out_state, s2.out_state);
+            // X; RZ(θ) ≡ RZ(-θ); X up to global phase after folding the
+            // constant-1 continuous parity (1 ⊕ x) into -θ on x.
+            assert_eq!(s1, s2);
             assert_eq!(s1.continuous_poly.parities.len(), 1);
-            assert_eq!(s2.continuous_poly.parities.len(), 1);
-            
-            // X; RZ(0.5) operates on state (1 \oplus x), so it has an extra constant 1 term in parity.
-            let p1 = &s1.continuous_poly.parities[0];
-            let p2 = &s2.continuous_poly.parities[0];
-            assert!(p1.terms.contains(&0)); // Contains the constant term
-            assert!(!p2.terms.contains(&0)); // Does not contain the constant term
-            
-            // Verify phases are correctly stored
-            let expected_phase1 = (0.1_f64).rem_euclid(2.0 * std::f64::consts::PI);
-            let expected_phase2 = (-0.1_f64).rem_euclid(2.0 * std::f64::consts::PI);
-            
-            let phase1 = s1.continuous_poly.phases[0];
-            let phase2 = s2.continuous_poly.phases[0];
-            
-            // We use absolute difference because snap_phase rounds to 8 decimal places internally
-            assert!((phase1 - expected_phase1).abs() < 1e-7);
-            assert!((phase2 - expected_phase2).abs() < 1e-7);
+            assert_eq!(s1.continuous_poly.parities[0], 1 as $primitive);
+            // -0.1 ≡ 2π - 0.1 = 3π/2 (promoted, phase 6) + remainder.
+            let expected = (-0.1_f64).rem_euclid(2.0 * std::f64::consts::PI) - 6.0 * std::f64::consts::FRAC_PI_4;
+            assert!((ticks_to_angle(s1.continuous_poly.phases[0]) - expected).abs() < 1e-7);
+            assert_eq!(s1.phase_poly.terms.as_slice(), &[PackedPhaseTerm::create(1, 6)]);
+            // Same phase content as a bare RZ(-0.1) (which lacks the X flip).
+            let mut s3 = EvaluatedPathSum::new_id(1);
+            s3.apply_rz(0, -0.1);
+            assert_eq!(s1.continuous_poly, s3.continuous_poly);
+            assert_eq!(s1.phase_poly, s3.phase_poly);
+        }
+
+        #[test]
+        fn test_x_rz_pi4_commutes() {
+            let mut s1 = EvaluatedPathSum::new_id(1);
+            s1.apply_x(0);
+            s1.apply_rz(0, std::f64::consts::FRAC_PI_4);
+            s1.reduce();
+
+            let mut s2 = EvaluatedPathSum::new_id(1);
+            s2.apply_rz(0, -std::f64::consts::FRAC_PI_4);
+            s2.apply_x(0);
+            s2.reduce();
+
+            assert_eq!(s1, s2);
+        }
+
+        #[test]
+        fn test_continuous_constant_fold() {
+            let x0 = 1 as $primitive << 0;
+            let theta = 0.3_f64;
+
+            let mut a = ContinuousPhasePoly::new();
+            a.apply_phase(BooleanPoly::from_terms(smallvec![0, x0]), theta);
+
+            let mut b = ContinuousPhasePoly::new();
+            b.apply_phase(BooleanPoly::from_terms(smallvec![x0]), -theta);
+
+            assert_eq!(a, b);
+            assert_eq!(a.parities.len(), 1);
+            assert_eq!(a.parities[0], x0);
+
+            let mut global = ContinuousPhasePoly::new();
+            global.apply_phase(BooleanPoly::from_terms(smallvec![0]), theta);
+            assert!(global.parities.is_empty());
+
+            let mut cancel = ContinuousPhasePoly::new();
+            cancel.apply_phase(BooleanPoly::from_terms(smallvec![0, x0]), theta);
+            cancel.apply_phase(BooleanPoly::from_terms(smallvec![x0]), theta);
+            assert!(cancel.parities.is_empty());
         }
 
         #[test]
@@ -422,13 +477,16 @@ macro_rules! define_tests_logic {
 
         #[test]
         fn test_sx_h_s_h_equivalence() {
-            let mut s2 = EvaluatedPathSum::new_id(1);
-            s2.apply_h(0);
-            s2.apply_s(0);
-            s2.apply_h(0);
-            s2.reduce();
-            // Verifies the pi/2 Gaussian elimination successfully reduces the state
-            assert_eq!(s2.num_path_vars, 1);
+            let mut sx = EvaluatedPathSum::new_id(1);
+            sx.apply_sx(0);
+            sx.reduce();
+            let mut hsh = EvaluatedPathSum::new_id(1);
+            hsh.apply_h(0);
+            hsh.apply_s(0);
+            hsh.apply_h(0);
+            hsh.reduce();
+            assert_eq!(sx.num_path_vars, 1);
+            assert_eq!(sx, hsh, "SX and H S H must intern equal");
         }
 
         #[test]
@@ -460,12 +518,17 @@ macro_rules! define_tests_logic {
 
         #[test]
         fn test_sxdg_h_sdg_h_equivalence() {
-            let mut s2 = EvaluatedPathSum::new_id(1);
-            s2.apply_h(0);
-            s2.apply_sdg(0);
-            s2.apply_h(0);
-            s2.reduce();
-            assert_eq!(s2.num_path_vars, 1);
+            let mut sxdg = EvaluatedPathSum::new_id(1);
+            sxdg.apply_x(0);
+            sxdg.apply_sx(0);
+            sxdg.reduce();
+            let mut hsdgh = EvaluatedPathSum::new_id(1);
+            hsdgh.apply_h(0);
+            hsdgh.apply_sdg(0);
+            hsdgh.apply_h(0);
+            hsdgh.reduce();
+            assert_eq!(sxdg.num_path_vars, 1);
+            assert_eq!(sxdg, hsdgh, "SXdg and H Sdg H must intern equal");
         }
 
         #[test]
@@ -494,6 +557,95 @@ macro_rules! define_tests_logic {
             b.apply_x(1);
             b.reduce();
             assert_eq!(a, b, "X on CX target commutes from I_n");
+        }
+
+        #[test]
+        fn test_commuting_h_order_interns_equal() {
+            let mut a = EvaluatedPathSum::new_id(2);
+            a.apply_h(0);
+            a.apply_h(1);
+            a.reduce();
+            let mut b = EvaluatedPathSum::new_id(2);
+            b.apply_h(1);
+            b.apply_h(0);
+            b.reduce();
+            assert_eq!(a, b, "H0 H1 and H1 H0 must intern equal");
+        }
+
+        #[test]
+        fn test_nam_h_equals_ibm_rz_sx_rz() {
+            let mut nam = EvaluatedPathSum::new_id(1);
+            nam.apply_h(0);
+            nam.reduce();
+            let mut ibm = EvaluatedPathSum::new_id(1);
+            ibm.apply_rz(0, std::f64::consts::FRAC_PI_2);
+            ibm.apply_sx(0);
+            ibm.apply_rz(0, std::f64::consts::FRAC_PI_2);
+            ibm.reduce();
+            assert_eq!(nam, ibm, "nam H and ibm RZ(π/2) SX RZ(π/2) must intern equal");
+        }
+
+        #[test]
+        fn test_h_x_equals_z_h() {
+            let mut hx = EvaluatedPathSum::new_id(1);
+            hx.apply_h(0);
+            hx.apply_x(0);
+            hx.reduce();
+            let mut zh = EvaluatedPathSum::new_id(1);
+            zh.apply_z(0);
+            zh.apply_h(0);
+            zh.reduce();
+            assert_eq!(hx, zh, "H X and Z H must intern equal");
+        }
+
+        #[test]
+        fn test_h0_h1_cx01_equals_cx10_h0_h1() {
+            let mut a = EvaluatedPathSum::new_id(2);
+            a.apply_h(0);
+            a.apply_h(1);
+            a.apply_cx(0, 1);
+            a.reduce();
+            let mut b = EvaluatedPathSum::new_id(2);
+            b.apply_cx(1, 0);
+            b.apply_h(0);
+            b.apply_h(1);
+            b.reduce();
+            assert_eq!(a, b, "H0 H1 CX01 and CX10 H0 H1 must intern equal");
+        }
+
+        #[test]
+        fn test_capacity_overflow_is_unique_and_silent() {
+            // Usable variable bits are BITS-3 (packed discrete phase uses the top 3).
+            let cap = <$primitive>::BITS - 3;
+            let mut at_cap = EvaluatedPathSum::new_id(1);
+            at_cap.num_path_vars = cap - 1;
+            let before = at_cap.clone();
+
+            at_cap.apply_h(0);
+            assert!(at_cap.is_overflowed(), "H at capacity must set overflow_id");
+            assert_eq!(at_cap.num_path_vars, before.num_path_vars, "H must not allocate");
+            assert_eq!(at_cap.out_state, before.out_state, "H must not rewrite the state");
+            assert_ne!(&at_cap, &before, "overflowed state must not intern-equal the pre-H state");
+
+            let mut other = before.clone();
+            other.apply_sx(0);
+            assert!(other.is_overflowed());
+            assert_ne!(other.overflow_id, at_cap.overflow_id, "overflow tokens must be unique");
+            assert_ne!(&at_cap, &other);
+
+            let snap = at_cap.clone();
+            at_cap.apply_x(0);
+            at_cap.apply_z(0);
+            at_cap.apply_rz(0, 0.3);
+            at_cap.reduce();
+            at_cap.canonicalize_gauge();
+            assert_eq!(at_cap, snap, "later ops on an overflowed state must be no-ops");
+
+            let mut ok = EvaluatedPathSum::new_id(1);
+            ok.apply_h(0);
+            ok.reduce();
+            assert!(!ok.is_overflowed(), "below-cap H must stay well-formed");
+            assert_sound_unequal(&ok, &at_cap);
         }
     }
 }

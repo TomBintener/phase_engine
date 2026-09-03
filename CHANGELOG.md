@@ -2,6 +2,13 @@
 
 ## [Unreleased] - ReleaseDate
 
+- PathSum: pyo3 `fingerprint_ops_64` / `fingerprint_ops_128` fold a gate list through the engine and return `eq_fingerprint` without building an `EGraph`.
+- PathSum: continuous parities are stored as one XOR mask per angle (linear in the variables). `reduce()`, the gauge, and Steiner/Gray read that mask directly.
+- PathSum: H/SX capacity overflow sets a unique `overflow_id` and leaves the state unchanged instead of `assert!`. Overflowed states never intern-equal a well-formed state or each other; later gates, `reduce()`, and synthesis are no-ops / `"None"`.
+- PathSum: Steiner and Gray refuse a state when a continuous parity is not a linear XOR of input qubits (path-variable bits or product monomials). Previously Steiner pushed `variable_mask` and dropped those bits, attaching the angle to leftover qubit wires.
+- PathSum: fold constant-1 continuous parities (global phase) so interned Eq matches `X RZ(θ) ≡ RZ(−θ) X`.
+- PathSum: continuous phases are integer lattice ticks (2^29 per turn) instead of `f64` snapped to 1e-8, so π/4 multiples, negation and modular sums are exact. `extract_cliffords` promotes only the even π/4 quotient and keeps `θ mod π/2` continuous (T/Tdg go through the parity table like `RZ(π/4)`), which makes the discrete/continuous split a function of each parity's total angle: `RZ(θ) T`, `T RZ(θ)` and `RZ(θ+π/4)` now intern equal, including on multi-qubit parities. Host fingerprints print ticks.
+- PathSum: `reduce()` (and the `x` / `cx` FFI wrappers) canonicalize the path-variable gauge: row echelon over `out_state`, bare parities for internal variables, a canonical `v` vs `1⊕v` choice, and a signature-based relabeling. Placement tests assert the same interned identities as the rest of the engine suite: commuting `H`s in either order, `SX` vs `H S H`, `SXdg` vs `H Sdg H`, nam `h` vs ibm `RZ(π/2) SX RZ(π/2)`, `H X` vs `Z H`, and `H0 H1 CX01` vs `CX10 H0 H1`. Costs about 2.8× on the SX-heavy `pathsum_benchmarking` workload (up to 24 live path variables) and more on Nam-style RZ/SX/CX ladders; H-free states pay one early return.
 - Replace Gauss–Jordan `synthesize_cnot_matrix` with sectioned Patel–Markov–Hayes (quant-ph/0302002). Keep GE as `synthesize_cnot_matrix_ge` fallback. Gray/Steiner residuals share the new helper.
 - Canonicalize `state_fingerprint` onto the interned PathSum equality key (continuous phases as 1e8 snap ticks, not raw `f64` Debug) so pre-pass fingerprints match `state_union`.
 - Replace the Gray-flavoured nearest-neighbour parity tour with Amy–Azimzadeh–Mosca GraySynth (arXiv:1712.01859 Alg. 1). Residual linear fix-up is still PMH. The old NN tour remains `synthesize_gray_network_nn` as a test oracle.

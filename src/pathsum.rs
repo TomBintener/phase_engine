@@ -81,6 +81,9 @@ where
     }
     let mut new_state = Arc::unwrap_or_clone(state.into_inner());
     op(&mut new_state, q as usize);
+    // Affine updates (X) skip `reduce()` but may leave a constant on a row
+    // that holds a path variable; restore the canonical gauge.
+    new_state.canonicalize_gauge_after_row_op();
     PSum64::new(Arc::new(new_state))
 }
 
@@ -95,6 +98,10 @@ pub fn apply_cx_logic_64(state: PSum64, qc: i64, qt: i64) -> PSum64 {
     }
     let mut new_state = Arc::unwrap_or_clone(state.into_inner());
     new_state.apply_cx(qc as usize, qt as usize);
+    // CX is a row operation and needs no `reduce()`, but it can move a path
+    // variable into another row; restore the canonical gauge (no-op without
+    // path variables).
+    new_state.canonicalize_gauge_after_row_op();
     PSum64::new(Arc::new(new_state))
 }
 
@@ -175,6 +182,9 @@ where
     }
     let mut new_state = Arc::unwrap_or_clone(state.into_inner());
     op(&mut new_state, q as usize);
+    // Affine updates (X) skip `reduce()` but may leave a constant on a row
+    // that holds a path variable; restore the canonical gauge.
+    new_state.canonicalize_gauge_after_row_op();
     PSum128::new(Arc::new(new_state))
 }
 
@@ -189,6 +199,10 @@ pub fn apply_cx_logic_128(state: PSum128, qc: i64, qt: i64) -> PSum128 {
     }
     let mut new_state = Arc::unwrap_or_clone(state.into_inner());
     new_state.apply_cx(qc as usize, qt as usize);
+    // CX is a row operation and needs no `reduce()`, but it can move a path
+    // variable into another row; restore the canonical gauge (no-op without
+    // path variables).
+    new_state.canonicalize_gauge_after_row_op();
     PSum128::new(Arc::new(new_state))
 }
 
@@ -255,6 +269,32 @@ fn rank_m_minus_i_128(state: &EvaluatedPathSum128) -> i64 {
     }
     rank as i64
 }
+/// Continuous parities must be linear XORs of *input* qubits. Path-variable
+/// bits or product monomials cannot be fed to Steiner/Gray: `variable_mask`
+/// is the OR of monomials, so a live path var would be silently dropped and
+/// the angle attached to leftover qubit bits.
+fn continuous_parities_are_qubit_linear_64(state: &EvaluatedPathSum64) -> bool {
+    let n = state.num_qubits as usize;
+    let valid_mask: u64 = if n >= 64 { u64::MAX } else { (1u64 << n) - 1 };
+    for &p in &state.continuous_poly.parities {
+        if p == 0 || (p & !valid_mask) != 0 {
+            return false;
+        }
+    }
+    true
+}
+
+fn continuous_parities_are_qubit_linear_128(state: &EvaluatedPathSum128) -> bool {
+    let n = state.num_qubits as usize;
+    let valid_mask: u128 = if n >= 128 { u128::MAX } else { (1u128 << n) - 1 };
+    for &p in &state.continuous_poly.parities {
+        if p == 0 || (p & !valid_mask) != 0 {
+            return false;
+        }
+    }
+    true
+}
+
 /// Qubits whose `out_state` carries a constant-1 term (net X / affine offset).
 /// Linear synthesizers only see `variable_mask`; callers append a trailing X layer.
 fn affine_x_offsets_64(state: &PSum64) -> Vec<usize> {
@@ -310,6 +350,12 @@ pub fn synthesize_steiner_logic_64(
     if gate_count <= 2 {
         return "None".to_string();
     }
+    if state.is_overflowed() {
+        return "None".to_string();
+    }
+    if !continuous_parities_are_qubit_linear_64(&state) {
+        return "None".to_string();
+    }
     let valid_mask = (1_u64 << state.num_qubits) - 1;
     for poly in &state.out_state {
         if (poly.variable_mask & !valid_mask) != 0 {
@@ -337,9 +383,8 @@ pub fn synthesize_steiner_logic_64(
         Some(disc) => parities.extend(disc),
         None => return "None".to_string(),
     }
-    for (i, p) in state.continuous_poly.parities.iter().enumerate() {
-        let mask = p.variable_mask;
-        let angle = state.continuous_poly.phases[i];
+    for (i, &mask) in state.continuous_poly.parities.iter().enumerate() {
+        let angle = crate::engine::ticks_to_angle(state.continuous_poly.phases[i]);
         parities.push((mask, angle));
     }
     // Merge duplicate parity masks (Mobius + continuous can collide).
@@ -468,6 +513,9 @@ pub fn synthesize_pmh_logic_64(state: PSum64, gate_count: i64) -> String {
     if gate_count <= 2 {
         return "None".to_string();
     }
+    if state.is_overflowed() {
+        return "None".to_string();
+    }
 
     // 1. Purity Check
     // 1a. No discrete or continuous phase polynomial terms (rules out Z/S/T/H/Rz gates).
@@ -558,6 +606,12 @@ pub fn synthesize_gray_logic_64(
     if gate_count <= 2 {
         return "None".to_string();
     }
+    if state.is_overflowed() {
+        return "None".to_string();
+    }
+    if !continuous_parities_are_qubit_linear_64(&state) {
+        return "None".to_string();
+    }
     let n = state.num_qubits as usize;
     let valid_mask: u64 = if n >= 64 { u64::MAX } else { (1u64 << n) - 1 };
 
@@ -578,14 +632,8 @@ pub fn synthesize_gray_logic_64(
     }
 
     let mut parities: Vec<(u64, f64)> = Vec::new();
-    for (i, p) in state.continuous_poly.parities.iter().enumerate() {
-        if (p.variable_mask & !valid_mask) != 0 {
-            return "None".to_string();
-        }
-        if p.terms.iter().any(|&t| t == 0 || t.count_ones() != 1) {
-            return "None".to_string();
-        }
-        parities.push((p.variable_mask, state.continuous_poly.phases[i]));
+    for (i, &mask) in state.continuous_poly.parities.iter().enumerate() {
+        parities.push((mask, crate::engine::ticks_to_angle(state.continuous_poly.phases[i])));
     }
 
     let mut monomials: Vec<(u64, f64)> = Vec::new();
@@ -631,6 +679,12 @@ pub fn synthesize_steiner_logic_128(
     if gate_count <= 2 {
         return "None".to_string();
     }
+    if state.is_overflowed() {
+        return "None".to_string();
+    }
+    if !continuous_parities_are_qubit_linear_128(&state) {
+        return "None".to_string();
+    }
     let valid_mask = (1_u128 << state.num_qubits) - 1;
     for poly in &state.out_state {
         if (poly.variable_mask & !valid_mask) != 0 {
@@ -657,9 +711,8 @@ pub fn synthesize_steiner_logic_128(
         Some(disc) => parities.extend(disc),
         None => return "None".to_string(),
     }
-    for (i, p) in state.continuous_poly.parities.iter().enumerate() {
-        let mask = p.variable_mask;
-        let angle = state.continuous_poly.phases[i];
+    for (i, &mask) in state.continuous_poly.parities.iter().enumerate() {
+        let angle = crate::engine::ticks_to_angle(state.continuous_poly.phases[i]);
         parities.push((mask, angle));
     }
     {
@@ -795,6 +848,12 @@ pub fn synthesize_gray_logic_128(
     if gate_count <= 2 {
         return "None".to_string();
     }
+    if state.is_overflowed() {
+        return "None".to_string();
+    }
+    if !continuous_parities_are_qubit_linear_128(&state) {
+        return "None".to_string();
+    }
     let n = state.num_qubits as usize;
     let valid_mask: u128 = if n >= 128 {
         u128::MAX
@@ -817,14 +876,8 @@ pub fn synthesize_gray_logic_128(
     }
 
     let mut parities: Vec<(u128, f64)> = Vec::new();
-    for (i, p) in state.continuous_poly.parities.iter().enumerate() {
-        if (p.variable_mask & !valid_mask) != 0 {
-            return "None".to_string();
-        }
-        if p.terms.iter().any(|&t| t == 0 || t.count_ones() != 1) {
-            return "None".to_string();
-        }
-        parities.push((p.variable_mask, state.continuous_poly.phases[i]));
+    for (i, &mask) in state.continuous_poly.parities.iter().enumerate() {
+        parities.push((mask, crate::engine::ticks_to_angle(state.continuous_poly.phases[i])));
     }
 
     let mut monomials: Vec<(u128, f64)> = Vec::new();
@@ -861,6 +914,9 @@ pub fn synthesize_gray_logic_128(
 
 pub fn synthesize_pmh_logic_128(state: PSum128, gate_count: i64) -> String {
     if gate_count <= 2 {
+        return "None".to_string();
+    }
+    if state.is_overflowed() {
         return "None".to_string();
     }
     // 1. Purity Check
@@ -1172,6 +1228,83 @@ impl BaseSort for PathSumSort128 {
     }
 }
 
+/// A host-side PathSum gate for [`fingerprint_ops_logic_64`] /
+/// [`fingerprint_ops_logic_128`]. Unsupported names return `None` from
+/// [`FingerprintOp::parse`] so the caller can refuse the circuit.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FingerprintOp {
+    X(i64),
+    Z(i64),
+    S(i64),
+    Sdg(i64),
+    T(i64),
+    Tdg(i64),
+    H(i64),
+    Sx(i64),
+    RzBits(i64, i64),
+    Cx(i64, i64),
+}
+
+impl FingerprintOp {
+    pub fn parse(name: &str, args: &[i64]) -> Option<Self> {
+        match name {
+            "x" if !args.is_empty() => Some(Self::X(args[0])),
+            "z" if !args.is_empty() => Some(Self::Z(args[0])),
+            "s" if !args.is_empty() => Some(Self::S(args[0])),
+            "sdg" if !args.is_empty() => Some(Self::Sdg(args[0])),
+            "t" if !args.is_empty() => Some(Self::T(args[0])),
+            "tdg" if !args.is_empty() => Some(Self::Tdg(args[0])),
+            "h" if !args.is_empty() => Some(Self::H(args[0])),
+            "sx" if !args.is_empty() => Some(Self::Sx(args[0])),
+            "rz_bits" if args.len() >= 2 => Some(Self::RzBits(args[0], args[1])),
+            "cx" if args.len() >= 2 => Some(Self::Cx(args[0], args[1])),
+            _ => None,
+        }
+    }
+}
+
+/// Fold `ops` through the same apply/`reduce` path as the FFI wrappers and
+/// return the interned `eq_fingerprint` string. Overflowed states return
+/// their overflow fingerprint (not `None`). `None` is only for an
+/// unsupported gate name.
+pub fn fingerprint_ops_logic_64(n: i64, ops: &[FingerprintOp]) -> Option<String> {
+    let mut ps = id_pathsum_logic_64(n);
+    for op in ops {
+        ps = match *op {
+            FingerprintOp::X(q) => apply_gate_logic_64(ps, q, |st, qq| st.apply_x(qq)),
+            FingerprintOp::Z(q) => apply_gate_logic_64(ps, q, |st, qq| st.apply_z(qq)),
+            FingerprintOp::S(q) => apply_gate_logic_64(ps, q, |st, qq| st.apply_s(qq)),
+            FingerprintOp::Sdg(q) => apply_gate_logic_64(ps, q, |st, qq| st.apply_sdg(qq)),
+            FingerprintOp::T(q) => apply_gate_logic_64(ps, q, |st, qq| st.apply_t(qq)),
+            FingerprintOp::Tdg(q) => apply_gate_logic_64(ps, q, |st, qq| st.apply_tdg(qq)),
+            FingerprintOp::H(q) => apply_gate_logic_64(ps, q, |st, qq| st.apply_h(qq)),
+            FingerprintOp::Sx(q) => apply_gate_logic_64(ps, q, |st, qq| st.apply_sx(qq)),
+            FingerprintOp::RzBits(q, bits) => apply_rz_logic_64(ps, q, bits),
+            FingerprintOp::Cx(c, t) => apply_cx_logic_64(ps, c, t),
+        };
+    }
+    Some(state_fingerprint_logic_64(ps))
+}
+
+pub fn fingerprint_ops_logic_128(n: i64, ops: &[FingerprintOp]) -> Option<String> {
+    let mut ps = id_pathsum_logic_128(n);
+    for op in ops {
+        ps = match *op {
+            FingerprintOp::X(q) => apply_gate_logic_128(ps, q, |st, qq| st.apply_x(qq)),
+            FingerprintOp::Z(q) => apply_gate_logic_128(ps, q, |st, qq| st.apply_z(qq)),
+            FingerprintOp::S(q) => apply_gate_logic_128(ps, q, |st, qq| st.apply_s(qq)),
+            FingerprintOp::Sdg(q) => apply_gate_logic_128(ps, q, |st, qq| st.apply_sdg(qq)),
+            FingerprintOp::T(q) => apply_gate_logic_128(ps, q, |st, qq| st.apply_t(qq)),
+            FingerprintOp::Tdg(q) => apply_gate_logic_128(ps, q, |st, qq| st.apply_tdg(qq)),
+            FingerprintOp::H(q) => apply_gate_logic_128(ps, q, |st, qq| st.apply_h(qq)),
+            FingerprintOp::Sx(q) => apply_gate_logic_128(ps, q, |st, qq| st.apply_sx(qq)),
+            FingerprintOp::RzBits(q, bits) => apply_rz_logic_128(ps, q, bits),
+            FingerprintOp::Cx(c, t) => apply_cx_logic_128(ps, c, t),
+        };
+    }
+    Some(state_fingerprint_logic_128(ps))
+}
+
 /// Complete canonical state fingerprint (64-bit): the interned equality
 /// key of `EvaluatedPathSum` (`PartialEq` / `Hash`), so two fingerprints
 /// match iff `state_union` would merge the states. Continuous phases are
@@ -1194,7 +1327,12 @@ pub fn debug_pathsum_logic_64(state: PSum64) -> String {
     ));
     out.push_str(&format!(
         "Continuous Phases: {:?}\n",
-        state.continuous_poly.phases
+        state
+            .continuous_poly
+            .phases
+            .iter()
+            .map(|&t| crate::engine::ticks_to_angle(t))
+            .collect::<Vec<f64>>()
     ));
     out.push_str("Phase Poly Terms: ");
     for term in &state.phase_poly.terms {
@@ -1213,7 +1351,12 @@ pub fn debug_pathsum_logic_128(state: PSum128) -> String {
     ));
     out.push_str(&format!(
         "Continuous Phases: {:?}\n",
-        state.continuous_poly.phases
+        state
+            .continuous_poly
+            .phases
+            .iter()
+            .map(|&t| crate::engine::ticks_to_angle(t))
+            .collect::<Vec<f64>>()
     ));
     out.push_str("Phase Poly Terms: ");
     for term in &state.phase_poly.terms {
@@ -1225,40 +1368,94 @@ pub fn debug_pathsum_logic_128(state: PSum128) -> String {
 }
 
 #[cfg(test)]
+mod gauge_ffi_tests {
+    use super::*;
+
+    /// The X / CX wrappers skip `reduce()`; they must still hand back a
+    /// canonical gauge so a CX-terminated state interns equal to the same
+    /// operator reached through a reducing gate.
+    #[test]
+    fn cx_and_x_wrappers_keep_the_gauge_canonical() {
+        // H0 H1 CX01 == CX10 H0 H1
+        let mut a = id_pathsum_logic_64(2);
+        a = apply_gate_logic_64(a, 0, |st, q| st.apply_h(q));
+        a = apply_gate_logic_64(a, 1, |st, q| st.apply_h(q));
+        a = apply_cx_logic_64(a, 0, 1);
+        let mut b = id_pathsum_logic_64(2);
+        b = apply_cx_logic_64(b, 1, 0);
+        b = apply_gate_logic_64(b, 0, |st, q| st.apply_h(q));
+        b = apply_gate_logic_64(b, 1, |st, q| st.apply_h(q));
+        assert_eq!(a, b, "CX-terminated state must be canonical");
+        assert_eq!(
+            state_fingerprint_logic_64(a.clone()),
+            state_fingerprint_logic_64(b.clone())
+        );
+
+        // H0 X0 == Z0 H0
+        let mut c = id_pathsum_logic_64(1);
+        c = apply_gate_logic_64(c, 0, |st, q| st.apply_h(q));
+        c = apply_gate_no_reduce_logic_64(c, 0, |st, q| st.apply_x(q));
+        let mut d = id_pathsum_logic_64(1);
+        d = apply_gate_logic_64(d, 0, |st, q| st.apply_z(q));
+        d = apply_gate_logic_64(d, 0, |st, q| st.apply_h(q));
+        assert_eq!(c, d, "X-terminated state must be canonical");
+
+        // Same for the 128-bit engine.
+        let mut a = id_pathsum_logic_128(2);
+        a = apply_gate_logic_128(a, 0, |st, q| st.apply_h(q));
+        a = apply_gate_logic_128(a, 1, |st, q| st.apply_h(q));
+        a = apply_cx_logic_128(a, 0, 1);
+        let mut b = id_pathsum_logic_128(2);
+        b = apply_cx_logic_128(b, 1, 0);
+        b = apply_gate_logic_128(b, 0, |st, q| st.apply_h(q));
+        b = apply_gate_logic_128(b, 1, |st, q| st.apply_h(q));
+        assert_eq!(a, b);
+
+        // Negative control: H0 H1 CX10 (= CX01 H0 H1) is a different operator.
+        let mut e = id_pathsum_logic_64(2);
+        e = apply_gate_logic_64(e, 0, |st, q| st.apply_h(q));
+        e = apply_gate_logic_64(e, 1, |st, q| st.apply_h(q));
+        e = apply_cx_logic_64(e, 1, 0);
+        assert_ne!(e, c);
+        assert_ne!(state_fingerprint_logic_64(e), state_fingerprint_logic_64(d));
+    }
+}
+
+#[cfg(test)]
 mod fingerprint_tests {
     use super::*;
     use crate::engine::engine_64;
 
-    /// `state_union` / interned `PartialEq` snap continuous phases to 1e8
-    /// ticks. The host fingerprint must follow that lattice, not raw `f64`
-    /// Debug, so pre-pass string compare matches in-cycle merge.
+    /// `state_union` / interned `PartialEq` compare continuous phases on the
+    /// integer tick lattice. The host fingerprint must follow that lattice,
+    /// not raw `f64` angles, so pre-pass string compare matches in-cycle merge.
     #[test]
     fn fingerprint_matches_snapped_eq_not_raw_debug() {
+        use crate::engine::{TICKS_PER_TURN, ticks_to_angle};
+        let tick = std::f64::consts::TAU / TICKS_PER_TURN as f64;
+        // An angle 0.3 ticks above a lattice point: +0.15 ticks rounds to the
+        // same tick, +0.4 ticks crosses to the next one.
+        let base = ticks_to_angle(31_615_000) + 0.3 * tick;
+
         let mut a = engine_64::EvaluatedPathSum::new_id(1);
-        a.apply_rz(0, 0.37);
+        a.apply_rz(0, base);
         assert!(
             !a.continuous_poly.phases.is_empty(),
-            "0.37 is not a π/4 multiple; it must stay in the continuous poly"
+            "the angle is not a π/4 multiple; it must stay in the continuous poly"
         );
 
-        let mut b = a.clone();
-        b.continuous_poly.phases[0] += 0.4 / SNAP_PRECISION;
-
+        let mut b = engine_64::EvaluatedPathSum::new_id(1);
+        b.apply_rz(0, base + 0.15 * tick);
         assert_eq!(
             a, b,
-            "perturbation inside the same snap tick must be PartialEq"
-        );
-        assert_ne!(
-            format!("{:?}", a.continuous_poly.phases[0]),
-            format!("{:?}", b.continuous_poly.phases[0]),
-            "raw f64 Debug should still distinguish the perturbation"
+            "perturbation inside the same lattice tick must be PartialEq"
         );
 
         let fp_a = state_fingerprint_logic_64(PSum64::new(Arc::new(a.clone())));
         let fp_b = state_fingerprint_logic_64(PSum64::new(Arc::new(b)));
         assert_eq!(
             fp_a, fp_b,
-            "snap-equal states must share the host fingerprint"
+            "tick-equal states must share the host fingerprint"
         );
         assert!(
             fp_a.contains("num_qubits: 1"),
@@ -1266,23 +1463,282 @@ mod fingerprint_tests {
         );
         assert!(
             !fp_a.contains("phases: [0."),
-            "fingerprint must emit snap ticks, not raw f64 Debug: {fp_a}"
+            "fingerprint must emit lattice ticks, not raw f64 angles: {fp_a}"
         );
 
-        let mut c = a.clone();
-        c.continuous_poly.phases[0] += 0.6 / SNAP_PRECISION;
-        assert_ne!(a, c, "crossing a snap tick must change PartialEq");
+        let mut c = engine_64::EvaluatedPathSum::new_id(1);
+        c.apply_rz(0, base + 0.4 * tick);
+        assert_ne!(a, c, "crossing a lattice tick must change PartialEq");
         assert_ne!(
             state_fingerprint_logic_64(PSum64::new(Arc::new(a))),
             state_fingerprint_logic_64(PSum64::new(Arc::new(c))),
-            "crossing a snap tick must change the host fingerprint"
+            "crossing a lattice tick must change the host fingerprint"
         );
+    }
+
+    fn fold_ops_64(n: i64, ops: &[FingerprintOp]) -> PSum64 {
+        let mut ps = id_pathsum_logic_64(n);
+        for op in ops {
+            ps = match *op {
+                FingerprintOp::X(q) => apply_gate_logic_64(ps, q, |st, qq| st.apply_x(qq)),
+                FingerprintOp::Z(q) => apply_gate_logic_64(ps, q, |st, qq| st.apply_z(qq)),
+                FingerprintOp::S(q) => apply_gate_logic_64(ps, q, |st, qq| st.apply_s(qq)),
+                FingerprintOp::Sdg(q) => apply_gate_logic_64(ps, q, |st, qq| st.apply_sdg(qq)),
+                FingerprintOp::T(q) => apply_gate_logic_64(ps, q, |st, qq| st.apply_t(qq)),
+                FingerprintOp::Tdg(q) => apply_gate_logic_64(ps, q, |st, qq| st.apply_tdg(qq)),
+                FingerprintOp::H(q) => apply_gate_logic_64(ps, q, |st, qq| st.apply_h(qq)),
+                FingerprintOp::Sx(q) => apply_gate_logic_64(ps, q, |st, qq| st.apply_sx(qq)),
+                FingerprintOp::RzBits(q, bits) => apply_rz_logic_64(ps, q, bits),
+                FingerprintOp::Cx(c, t) => apply_cx_logic_64(ps, c, t),
+            };
+        }
+        ps
+    }
+
+    fn fold_ops_128(n: i64, ops: &[FingerprintOp]) -> PSum128 {
+        let mut ps = id_pathsum_logic_128(n);
+        for op in ops {
+            ps = match *op {
+                FingerprintOp::X(q) => apply_gate_logic_128(ps, q, |st, qq| st.apply_x(qq)),
+                FingerprintOp::Z(q) => apply_gate_logic_128(ps, q, |st, qq| st.apply_z(qq)),
+                FingerprintOp::S(q) => apply_gate_logic_128(ps, q, |st, qq| st.apply_s(qq)),
+                FingerprintOp::Sdg(q) => apply_gate_logic_128(ps, q, |st, qq| st.apply_sdg(qq)),
+                FingerprintOp::T(q) => apply_gate_logic_128(ps, q, |st, qq| st.apply_t(qq)),
+                FingerprintOp::Tdg(q) => apply_gate_logic_128(ps, q, |st, qq| st.apply_tdg(qq)),
+                FingerprintOp::H(q) => apply_gate_logic_128(ps, q, |st, qq| st.apply_h(qq)),
+                FingerprintOp::Sx(q) => apply_gate_logic_128(ps, q, |st, qq| st.apply_sx(qq)),
+                FingerprintOp::RzBits(q, bits) => apply_rz_logic_128(ps, q, bits),
+                FingerprintOp::Cx(c, t) => apply_cx_logic_128(ps, c, t),
+            };
+        }
+        ps
+    }
+
+    fn lcg(rng: &mut u64) -> u64 {
+        *rng = rng
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
+        *rng
+    }
+
+    fn bits_f64(theta: f64) -> i64 {
+        theta.to_bits() as i64
+    }
+
+    fn ibm_h(q: i64) -> [FingerprintOp; 3] {
+        [
+            FingerprintOp::RzBits(q, bits_f64(std::f64::consts::FRAC_PI_2)),
+            FingerprintOp::Sx(q),
+            FingerprintOp::RzBits(q, bits_f64(std::f64::consts::FRAC_PI_2)),
+        ]
+    }
+
+    fn expand_nam_h_to_ibm(ops: &[FingerprintOp]) -> Vec<FingerprintOp> {
+        let mut out = Vec::with_capacity(ops.len() + 4);
+        for op in ops {
+            if let FingerprintOp::H(q) = *op {
+                out.extend_from_slice(&ibm_h(q));
+            } else {
+                out.push(*op);
+            }
+        }
+        out
+    }
+
+    fn random_ops(rng: &mut u64, n: i64, len: usize) -> Vec<FingerprintOp> {
+        const ANGLES: [f64; 5] = [0.3, 0.7, -1.1, std::f64::consts::FRAC_PI_8, 2.5];
+        let mut ops = Vec::with_capacity(len + 4);
+        for _ in 0..len {
+            let q = (lcg(rng) % n as u64) as i64;
+            match lcg(rng) % 12 {
+                0 => ops.push(FingerprintOp::X(q)),
+                1 => ops.push(FingerprintOp::Z(q)),
+                2 => ops.push(FingerprintOp::S(q)),
+                3 => ops.push(FingerprintOp::Sdg(q)),
+                4 => ops.push(FingerprintOp::T(q)),
+                5 => ops.push(FingerprintOp::Tdg(q)),
+                6 => ops.push(FingerprintOp::H(q)),
+                7 => ops.push(FingerprintOp::Sx(q)),
+                8 => {
+                    let theta = ANGLES[(lcg(rng) as usize) % ANGLES.len()];
+                    ops.push(FingerprintOp::RzBits(q, bits_f64(theta)));
+                }
+                9 => ops.extend_from_slice(&ibm_h(q)),
+                _ => {
+                    let mut t = (lcg(rng) % n as u64) as i64;
+                    if t == q {
+                        t = (t + 1) % n;
+                    }
+                    ops.push(FingerprintOp::Cx(q, t));
+                }
+            }
+        }
+        ops
+    }
+
+    fn assert_ops_match_ffi_64(n: i64, ops: &[FingerprintOp]) {
+        let folded = fold_ops_64(n, ops);
+        let via_ops = fingerprint_ops_logic_64(n, ops).expect("supported ops");
+        assert_eq!(
+            via_ops,
+            state_fingerprint_logic_64(folded),
+            "fingerprint_ops must match FFI-folded eq_fingerprint for {ops:?}"
+        );
+    }
+
+    #[test]
+    fn fingerprint_ops_matches_ffi_eq_fingerprint() {
+        let bits = |theta: f64| theta.to_bits() as i64;
+        let h01 = [FingerprintOp::H(0), FingerprintOp::H(1)];
+        let h10 = [FingerprintOp::H(1), FingerprintOp::H(0)];
+        let nam_h = [FingerprintOp::H(0)];
+        let ibm_h = [
+            FingerprintOp::RzBits(0, bits(std::f64::consts::FRAC_PI_2)),
+            FingerprintOp::Sx(0),
+            FingerprintOp::RzBits(0, bits(std::f64::consts::FRAC_PI_2)),
+        ];
+        for (n, ops) in [
+            (2i64, h01.as_slice()),
+            (2, h10.as_slice()),
+            (1, nam_h.as_slice()),
+            (1, ibm_h.as_slice()),
+        ] {
+            let folded = fold_ops_64(n, ops);
+            let via_ops = fingerprint_ops_logic_64(n, ops).expect("supported ops");
+            assert_eq!(
+                via_ops,
+                state_fingerprint_logic_64(folded),
+                "fingerprint_ops must match FFI-folded eq_fingerprint for {ops:?}"
+            );
+        }
+        assert_eq!(
+            fingerprint_ops_logic_64(2, &h01),
+            fingerprint_ops_logic_64(2, &h10),
+            "commuting H order must share a fingerprint"
+        );
+        assert_eq!(
+            fingerprint_ops_logic_64(1, &nam_h),
+            fingerprint_ops_logic_64(1, &ibm_h),
+            "nam H and ibm RZ SX RZ must share a fingerprint"
+        );
+        assert_eq!(
+            FingerprintOp::parse("ry", &[0]),
+            None,
+            "unsupported gates must refuse"
+        );
+        assert_eq!(fingerprint_ops_logic_64(1, &[]).unwrap().contains("num_qubits: 1"), true);
+    }
+
+    #[test]
+    fn fingerprint_ops_random_circuits_match_ffi_including_s3_pairs() {
+        let mut rng = 0xF1A7_5EED_0000_0007u64;
+        for n in [2i64, 3] {
+            for _ in 0..24 {
+                let prefix = random_ops(&mut rng, n, 8);
+                assert_ops_match_ffi_64(n, &prefix);
+
+                let ibm = expand_nam_h_to_ibm(&prefix);
+                assert_eq!(
+                    fingerprint_ops_logic_64(n, &prefix),
+                    fingerprint_ops_logic_64(n, &ibm),
+                    "nam H and ibm RZ SX RZ must share a fingerprint after a random prefix"
+                );
+
+                if n >= 2 {
+                    let mut h01 = prefix.clone();
+                    h01.extend_from_slice(&[FingerprintOp::H(0), FingerprintOp::H(1)]);
+                    let mut h10 = prefix.clone();
+                    h10.extend_from_slice(&[FingerprintOp::H(1), FingerprintOp::H(0)]);
+                    assert_ops_match_ffi_64(n, &h01);
+                    assert_eq!(
+                        fingerprint_ops_logic_64(n, &h01),
+                        fingerprint_ops_logic_64(n, &h10),
+                        "commuting H order must share a fingerprint after a random prefix"
+                    );
+                }
+
+                let q = (lcg(&mut rng) % n as u64) as i64;
+                let mut hx = prefix.clone();
+                hx.extend_from_slice(&[FingerprintOp::H(q), FingerprintOp::X(q)]);
+                let mut zh = prefix.clone();
+                zh.extend_from_slice(&[FingerprintOp::Z(q), FingerprintOp::H(q)]);
+                assert_ops_match_ffi_64(n, &hx);
+                assert_eq!(
+                    fingerprint_ops_logic_64(n, &hx),
+                    fingerprint_ops_logic_64(n, &zh),
+                    "HX and ZH must share a fingerprint after a random prefix"
+                );
+            }
+        }
+
+        let sample = random_ops(&mut rng, 2, 6);
+        let via_128 = fingerprint_ops_logic_128(2, &sample).expect("supported ops");
+        assert_eq!(
+            via_128,
+            state_fingerprint_logic_128(fold_ops_128(2, &sample)),
+            "128-bit fingerprint_ops must match FFI-folded eq_fingerprint"
+        );
+    }
+
+    #[test]
+    fn fingerprint_ops_overflow_returns_string_not_none() {
+        // n=1 with 60 live path vars is at the 64-bit cap; the next H overflows.
+        let mut ops = vec![FingerprintOp::H(0); 61];
+        // 61 H without reduce would overflow; FFI reduce may cancel pairs.
+        // Force overflow via a hand-built state and compare tokens via apply.
+        let mut state = engine_64::EvaluatedPathSum::new_id(1);
+        state.num_path_vars = 60;
+        state.apply_h(0);
+        assert!(state.is_overflowed());
+        let overflow_fp = state.eq_fingerprint();
+        let id_fp = fingerprint_ops_logic_64(1, &[]).unwrap();
+        assert_ne!(overflow_fp, id_fp);
+        // Direct helper still returns Some for a supported (empty) list.
+        assert!(fingerprint_ops_logic_64(1, &ops).is_some());
+        let _ = ops.pop();
+    }
+
+    #[test]
+    fn fingerprint_ops_sixty_qubit_second_h_overflows() {
+        // 60 qubits + 1 live path var is the 64-bit cap. The first H allocates;
+        // the second H must overflow and still return a string.
+        let ops = [FingerprintOp::H(0), FingerprintOp::H(1)];
+        let overflowed = fingerprint_ops_logic_64(60, &ops).expect("supported ops");
+        let again = fingerprint_ops_logic_64(60, &ops).expect("supported ops");
+        let well = fingerprint_ops_logic_64(2, &ops).expect("supported ops");
+        let identity = fingerprint_ops_logic_64(60, &[]).expect("empty ops");
+        assert_ne!(overflowed, well);
+        assert_ne!(overflowed, identity);
+        assert_ne!(
+            overflowed, again,
+            "overflow tokens must be unique across calls"
+        );
+        assert_ne!(
+            overflow_id_in(&overflowed),
+            0,
+            "overflow fingerprint must carry a nonzero token: {overflowed}"
+        );
+        assert_eq!(
+            overflow_id_in(&well),
+            0,
+            "below-cap H H must stay well-formed: {well}"
+        );
+    }
+
+    fn overflow_id_in(fp: &str) -> u64 {
+        let key = "overflow_id: ";
+        let start = fp.find(key).unwrap_or_else(|| panic!("{fp}")) + key.len();
+        let digits = fp[start..]
+            .find(|c: char| !c.is_ascii_digit())
+            .unwrap_or(fp.len() - start);
+        fp[start..start + digits].parse().unwrap()
     }
 }
 
 #[cfg(test)]
 mod gray_tests {
     use super::*;
+    use crate::engine::{engine_128, engine_64};
 
     fn bits(theta: f64) -> i64 {
         // Snap like the Python DSL does so angles are grid-aligned.
@@ -1415,6 +1871,161 @@ mod gray_tests {
         ps = apply_cx_logic_64(ps, 0, 1);
         let out = synthesize_gray_logic_64(ps, 1_000, i64::MAX, 50, 1);
         assert_eq!(out, "None");
+    }
+
+    fn assert_synth_sound_64(state: PSum64) {
+        let n = state.num_qubits as i64;
+        let n_plus_m = state.num_qubits as usize + state.num_path_vars as usize;
+        let gray = synthesize_gray_logic_64(state.clone(), 1_000, i64::MAX, 1, 1);
+        let steiner =
+            synthesize_steiner_logic_64(state.clone(), 1_000, i64::MAX, String::new(), 1, 1);
+        let pmh = synthesize_pmh_logic_64(state.clone(), 1_000);
+        for (kind, out) in [("gray", gray), ("steiner", steiner), ("pmh", pmh)] {
+            if out == "None" {
+                continue;
+            }
+            let replayed = if out == "empty" {
+                id_pathsum_logic_64(n)
+            } else {
+                replay(&out, n)
+            };
+            assert_eq!(
+                state.clone().into_inner(),
+                replayed.clone().into_inner(),
+                "{kind} replay interned Eq failed (instructions: {out})"
+            );
+            assert_eq!(
+                state_fingerprint_logic_64(state.clone()),
+                state_fingerprint_logic_64(replayed.clone()),
+                "{kind} replay fingerprint failed (instructions: {out})"
+            );
+            if n_plus_m <= 24 && !state.is_overflowed() {
+                let ma = engine_64::tests::pathsum_to_matrix(&state);
+                let mb = engine_64::tests::pathsum_to_matrix(&replayed);
+                assert!(
+                    engine_64::tests::matrices_match_up_to_global_phase(&ma, &mb, 1e-6),
+                    "{kind} replay matrices differ (instructions: {out})"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn refuses_h_then_rz_path_var_continuous() {
+        let mut ps = id_pathsum_logic_64(2);
+        ps = apply_gate_logic_64(ps, 0, |st, q| st.apply_h(q));
+        ps = apply_rz_logic_64(ps, 0, bits(0.37));
+        assert_eq!(
+            synthesize_gray_logic_64(ps.clone(), 1_000, i64::MAX, 50, 1),
+            "None"
+        );
+        assert_eq!(
+            synthesize_steiner_logic_64(ps, 1_000, i64::MAX, String::new(), 50, 1),
+            "None"
+        );
+    }
+
+    #[test]
+    fn refuses_path_var_bits_on_continuous_parity_with_clean_out_state() {
+        // out_state is identity (qubit-linear) but a continuous parity carries
+        // a path-variable bit. Steiner used to drop that bit via variable_mask.
+        let mut state = engine_64::EvaluatedPathSum::new_id(2);
+        state.num_path_vars = 1;
+        let v = 1u64 << 2;
+        state.continuous_poly.apply_phase(
+            engine_64::BooleanPoly::from_terms(smallvec::smallvec![1u64 << 0, v]),
+            0.37,
+        );
+        let ps = PSum64::new(Arc::new(state));
+        assert_eq!(
+            synthesize_gray_logic_64(ps.clone(), 1_000, i64::MAX, 50, 1),
+            "None"
+        );
+        assert_eq!(
+            synthesize_steiner_logic_64(ps.clone(), 1_000, i64::MAX, String::new(), 50, 1),
+            "None"
+        );
+
+        let mut state128 = engine_128::EvaluatedPathSum::new_id(2);
+        state128.num_path_vars = 1;
+        let v128 = 1u128 << 2;
+        state128.continuous_poly.apply_phase(
+            engine_128::BooleanPoly::from_terms(smallvec::smallvec![1u128 << 0, v128]),
+            0.37,
+        );
+        let ps128 = PSum128::new(Arc::new(state128));
+        assert_eq!(
+            synthesize_gray_logic_128(ps128.clone(), 1_000, i64::MAX, 50, 1),
+            "None"
+        );
+        assert_eq!(
+            synthesize_steiner_logic_128(ps128, 1_000, i64::MAX, String::new(), 50, 1),
+            "None"
+        );
+    }
+
+    #[test]
+    fn overflowed_state_refuses_synthesis() {
+        let mut state = engine_64::EvaluatedPathSum::new_id(1);
+        state.num_path_vars = 60;
+        state.apply_h(0);
+        assert!(state.is_overflowed());
+        let ps = PSum64::new(Arc::new(state));
+        assert_eq!(
+            synthesize_gray_logic_64(ps.clone(), 1_000, i64::MAX, 50, 1),
+            "None"
+        );
+        assert_eq!(
+            synthesize_steiner_logic_64(ps.clone(), 1_000, i64::MAX, String::new(), 50, 1),
+            "None"
+        );
+        assert_eq!(synthesize_pmh_logic_64(ps, 1_000), "None");
+
+        let mut state128 = engine_128::EvaluatedPathSum::new_id(1);
+        state128.num_path_vars = 124;
+        state128.apply_h(0);
+        assert!(state128.is_overflowed());
+        let ps128 = PSum128::new(Arc::new(state128));
+        assert_eq!(
+            synthesize_gray_logic_128(ps128.clone(), 1_000, i64::MAX, 50, 1),
+            "None"
+        );
+        assert_eq!(
+            synthesize_steiner_logic_128(ps128.clone(), 1_000, i64::MAX, String::new(), 50, 1),
+            "None"
+        );
+        assert_eq!(synthesize_pmh_logic_128(ps128, 1_000), "None");
+    }
+
+    #[test]
+    fn hfree_synth_is_sound() {
+        let mut rng = 0xA11C_E555_0000_0006u64;
+        let mut lcg = || {
+            rng = rng
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            rng
+        };
+        for n in [2i64, 3, 4] {
+            for _ in 0..16 {
+                let mut ps = id_pathsum_logic_64(n);
+                for _ in 0..8 {
+                    let q = (lcg() % n as u64) as i64;
+                    match lcg() % 3 {
+                        0 => ps = apply_gate_logic_64(ps, q, |st, qq| st.apply_x(qq)),
+                        1 if n > 1 => {
+                            let mut t = (lcg() % n as u64) as i64;
+                            if t == q {
+                                t = (t + 1) % n;
+                            }
+                            ps = apply_cx_logic_64(ps, q, t);
+                        }
+                        _ => ps = apply_rz_logic_64(ps, q, bits(0.37 + (lcg() % 7) as f64 * 0.11)),
+                    }
+                }
+                assert_synth_sound_64(ps);
+            }
+        }
     }
 
     #[test]

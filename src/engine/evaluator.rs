@@ -9,6 +9,10 @@ macro_rules! define_evaluator_logic {
         pub struct EvaluatedPathSum {
             pub num_qubits: u32,
             pub num_path_vars: u32,
+            /// `0` = well-formed. Non-zero is a unique token set when H/SX
+            /// cannot allocate another path variable (`BITS - 3`). Overflowed
+            /// states never intern-equal a well-formed state or each other.
+            pub overflow_id: u64,
             pub out_state: Vec<BooleanPoly>,
             pub phase_poly: CanonicalPhasePoly,
             pub continuous_poly: ContinuousPhasePoly,
@@ -26,18 +30,50 @@ macro_rules! define_evaluator_logic {
                 Self {
                     num_qubits,
                     num_path_vars: 0,
+                    overflow_id: 0,
                     out_state,
                     phase_poly: CanonicalPhasePoly { terms: smallvec::smallvec![] },
                     continuous_poly: ContinuousPhasePoly::new(),
                 }
             }
 
+            #[inline]
+            pub fn is_overflowed(&self) -> bool {
+                self.overflow_id != 0
+            }
+
+            #[inline]
+            fn mark_overflowed(&mut self) {
+                if self.overflow_id == 0 {
+                    self.overflow_id = super::next_overflow_id();
+                }
+            }
+
+            /// Allocate the next path-variable bit, or mark this state overflowed
+            /// and return `None` without applying the gate.
+            #[inline]
+            fn alloc_path_var(&mut self) -> Option<$primitive> {
+                if self.is_overflowed() {
+                    return None;
+                }
+                let var_index = self.num_qubits + self.num_path_vars;
+                if var_index >= (<$primitive>::BITS - 3) {
+                    self.mark_overflowed();
+                    return None;
+                }
+                let v_mask = 1 as $primitive << var_index;
+                self.num_path_vars += 1;
+                Some(v_mask)
+            }
+
             pub fn apply_x(&mut self, q: usize) {
+                if self.is_overflowed() { return; }
                 let constant_one = BooleanPoly::from_terms(smallvec::smallvec![0]);
                 self.out_state[q].add_assign(&constant_one);
             }
 
             pub fn apply_cx(&mut self, qc: usize, qt: usize) {
+                if self.is_overflowed() { return; }
                 assert!(qc != qt, "CX control and target must be distinct");
                 let (ctrl_poly, tgt_poly) = if qc < qt {
                     let (left, right) = self.out_state.split_at_mut(qt);
@@ -104,35 +140,36 @@ macro_rules! define_evaluator_logic {
             }
 
             pub fn apply_z(&mut self, q: usize) {
+                if self.is_overflowed() { return; }
                 let terms = self.out_state[q].terms.clone();
                 self.push_phase_expansion(&terms, 4);
             }
 
             pub fn apply_s(&mut self, q: usize) {
+                if self.is_overflowed() { return; }
                 let terms = self.out_state[q].terms.clone();
                 self.push_phase_expansion(&terms, 2);
             }
 
             pub fn apply_sdg(&mut self, q: usize) {
+                if self.is_overflowed() { return; }
                 let terms = self.out_state[q].terms.clone();
                 self.push_phase_expansion(&terms, 6);
             }
 
+            /// T goes through the parity table like `RZ(π/4)`: odd lattice
+            /// quotients live there (see `extract_cliffords`), so `T` and
+            /// `RZ(π/4)` must take the same path to intern equal.
             pub fn apply_t(&mut self, q: usize) {
-                let terms = self.out_state[q].terms.clone();
-                self.push_phase_expansion(&terms, 1);
+                self.apply_rz_ticks(q, TICKS_PER_PI_4 as u32);
             }
 
             pub fn apply_tdg(&mut self, q: usize) {
-                let terms = self.out_state[q].terms.clone();
-                self.push_phase_expansion(&terms, 7);
+                self.apply_rz_ticks(q, (7 * TICKS_PER_PI_4) as u32);
             }
 
             pub fn apply_sx(&mut self, q: usize) {
-                let var_index = self.num_qubits + self.num_path_vars;
-                assert!(var_index < (<$primitive>::BITS - 3), "Exceeded variable limit");
-                let v_mask = 1 as $primitive << var_index;
-                self.num_path_vars += 1;
+                let Some(v_mask) = self.alloc_path_var() else { return; };
 
                 // XOR the path variable into the target qubit
                 let v_poly = BooleanPoly::from_terms(smallvec::smallvec![v_mask]);
@@ -145,10 +182,7 @@ macro_rules! define_evaluator_logic {
             }
 
             pub fn apply_h(&mut self, q: usize) {
-                let var_index = self.num_qubits + self.num_path_vars;
-                assert!(var_index < (<$primitive>::BITS - 3), "Exceeded variable limit");
-                let v_mask = 1 as $primitive << var_index;
-                self.num_path_vars += 1;
+                let Some(v_mask) = self.alloc_path_var() else { return; };
                 let old_state = std::mem::replace(
                     &mut self.out_state[q],
                     BooleanPoly::from_terms(smallvec::smallvec![v_mask]),
@@ -171,31 +205,25 @@ macro_rules! define_evaluator_logic {
             }
 
             pub fn apply_rz(&mut self, q: usize, theta: f64) {
+                if self.is_overflowed() { return; }
+                self.apply_rz_ticks(q, angle_to_ticks(theta));
+            }
+
+            /// `RZ` by an exact number of lattice ticks on the current wire
+            /// polynomial of `q`, followed by promotion of the even π/4
+            /// quotient into the discrete polynomial.
+            pub fn apply_rz_ticks(&mut self, q: usize, ticks: u32) {
+                if self.is_overflowed() { return; }
                 let current_parity = self.out_state[q].clone();
-                self.continuous_poly.apply_phase(current_parity, theta);
+                self.continuous_poly.apply_ticks(current_parity, ticks);
                 self.promote_cliffords();
             }
 
-            /// Equality key for host-side fingerprint strings: every field
-            /// `PartialEq` / `Hash` intern on, with continuous phases as the
-            /// same 1e8 snap ticks (not raw `f64` Debug, which can distinguish
-            /// states `state_union` would merge).
+            /// Equality key for host-side fingerprint strings: exactly the
+            /// fields `PartialEq` / `Hash` intern on. Continuous phases are
+            /// integer lattice ticks, so the Debug dump is already the key.
             pub fn eq_fingerprint(&self) -> String {
-                let phase_ticks: Vec<i64> = self
-                    .continuous_poly
-                    .phases
-                    .iter()
-                    .map(|&p| (p * SNAP_PRECISION).round() as i64)
-                    .collect();
-                format!(
-                    "EvaluatedPathSum {{ num_qubits: {}, num_path_vars: {}, out_state: {:?}, phase_poly: {:?}, continuous_poly: ContinuousPhasePoly {{ parities: {:?}, phases: {:?} }} }}",
-                    self.num_qubits,
-                    self.num_path_vars,
-                    self.out_state,
-                    self.phase_poly,
-                    self.continuous_poly.parities,
-                    phase_ticks
-                )
+                format!("{:?}", self)
             }
         }
     }
