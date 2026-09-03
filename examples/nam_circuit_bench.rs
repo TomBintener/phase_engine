@@ -1,14 +1,16 @@
 //! Replay Nam-26 IBM-transpiled fixtures through PathSum (apply + reduce).
 //!
-//! This is the AGES-shaped engine cost: structured RZ/SX/CX Toffoli ladders
-//! with a handful of live path variables, not the SX-saturated random windows
-//! in `pathsum_benchmarking`.
+//! This is a PathSum-only microbenchmark focused on AGES-shaped workloads:
+//! structured Toffoli ladder circuits with a mix of Clifford and non-Clifford
+//! gates (including SX and RZ).
 //!
 //! Usage:
 //!   cargo run --release --example nam_circuit_bench -- /path/to/quasar_nam
 //!
-//! Prints per-circuit kgates/s, peak live path variables, and the share of
-//! gates that see an H-free state (gauge is then a single early return).
+//! Prints per-circuit kgates/s, peak live path variables, and peak phase
+//! polynomial size. It also reports the fraction of gates applied while the
+//! state is still H-free (num_path_vars == 0), for context when comparing
+//! different PathSum canonicalization strategies.
 
 use egglog::engine::engine_64::EvaluatedPathSum;
 use std::env;
@@ -39,7 +41,11 @@ fn median(mut xs: Vec<f64>) -> f64 {
 }
 
 fn parse_angle(raw: &str) -> f64 {
-    let s = raw.trim().replace(' ', "");
+    // Handles a few common QASM forms:
+    // - pi/2, -pi/4
+    // - <num>*pi/<den>
+    // - numeric radians
+    let s = raw.trim();
     let neg = s.starts_with('-');
     let s = s.trim_start_matches('+').trim_start_matches('-');
     let val = if s.eq_ignore_ascii_case("pi") {
@@ -57,11 +63,20 @@ fn parse_angle(raw: &str) -> f64 {
 }
 
 fn parse_qasm(path: &Path) -> (u32, Vec<Gate>) {
-    let src = fs::read_to_string(path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
+    let src = fs::read_to_string(path).unwrap_or_else(|e| {
+        panic!("read {}: {e}", path.display())
+    });
     let mut nq = 0u32;
     let mut gates = Vec::new();
+
     for line in src.lines() {
-        let t = line.split("//").next().unwrap_or("").trim().trim_end_matches(';').trim();
+        let t = line
+            .split("//")
+            .next()
+            .unwrap_or("")
+            .trim()
+            .trim_end_matches(';')
+            .trim();
         if t.is_empty() || t.starts_with("OPENQASM") || t.starts_with("include") {
             continue;
         }
@@ -73,12 +88,14 @@ fn parse_qasm(path: &Path) -> (u32, Vec<Gate>) {
             }
             continue;
         }
+
         let lower = t.to_ascii_lowercase();
         let qubit = |s: &str| -> usize {
             let lb = s.find('[').unwrap();
             let rb = s.find(']').unwrap();
             s[lb + 1..rb].parse().unwrap()
         };
+
         if lower.starts_with("cx ") {
             let args = t[2..].trim();
             let (a, b) = args.split_once(',').unwrap();
@@ -141,11 +158,10 @@ fn replay(n: u32, gates: &[Gate]) -> (u32, u32, usize) {
 }
 
 fn main() {
-    let dir = PathBuf::from(
-        env::args()
-            .nth(1)
-            .unwrap_or_else(|| "/agent/repos/ages/tests/fixtures/quasar_nam".into()),
-    );
+    let dir = PathBuf::from(env::args().nth(1).unwrap_or_else(|| {
+        "/agent/repos/ages/tests/fixtures/quasar_nam".into()
+    }));
+
     let names = [
         "tof_3.qasm",
         "tof_4.qasm",
@@ -158,37 +174,46 @@ fn main() {
         "rc_adder_6.qasm",
         "mod_mult_55.qasm",
     ];
+
     println!(
         "nam_circuit_bench dir={} engine=engine_64 reps={REPS}",
         dir.display()
     );
+
     let mut total_gates = 0usize;
     let mut total_secs = 0.0f64;
+
     for name in names {
         let path = dir.join(name);
         if !path.exists() {
             println!("skip={name} (missing)");
             continue;
         }
+
         let (n, gates) = parse_qasm(&path);
         if gates.is_empty() {
             println!("skip={name} (no gates)");
             continue;
         }
+
         let (peak_vars, hfree, peak_terms) = replay(n, &gates);
         for _ in 0..WARMUP {
             let _ = replay(n, &gates);
         }
+
         let mut times = Vec::with_capacity(REPS);
         for _ in 0..REPS {
             let t0 = Instant::now();
             let _ = replay(n, &gates);
             times.push(t0.elapsed().as_secs_f64());
         }
+
         let med = median(times);
         let kgps = gates.len() as f64 / med / 1e3;
+
         total_gates += gates.len();
         total_secs += med;
+
         println!(
             "circuit={name} qubits={n} gates={} median_us={:.1} kgates_per_s={:.1} peak_path_vars={peak_vars} hfree_gate_frac={:.2} peak_phase_terms={peak_terms}",
             gates.len(),
@@ -197,6 +222,7 @@ fn main() {
             hfree as f64 / gates.len() as f64,
         );
     }
+
     if total_secs > 0.0 {
         println!(
             "TOTAL gates={total_gates} secs={:.6} kgates_per_s={:.1}",
@@ -205,3 +231,4 @@ fn main() {
         );
     }
 }
+
