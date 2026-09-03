@@ -1495,6 +1495,97 @@ mod fingerprint_tests {
         ps
     }
 
+    fn fold_ops_128(n: i64, ops: &[FingerprintOp]) -> PSum128 {
+        let mut ps = id_pathsum_logic_128(n);
+        for op in ops {
+            ps = match *op {
+                FingerprintOp::X(q) => apply_gate_logic_128(ps, q, |st, qq| st.apply_x(qq)),
+                FingerprintOp::Z(q) => apply_gate_logic_128(ps, q, |st, qq| st.apply_z(qq)),
+                FingerprintOp::S(q) => apply_gate_logic_128(ps, q, |st, qq| st.apply_s(qq)),
+                FingerprintOp::Sdg(q) => apply_gate_logic_128(ps, q, |st, qq| st.apply_sdg(qq)),
+                FingerprintOp::T(q) => apply_gate_logic_128(ps, q, |st, qq| st.apply_t(qq)),
+                FingerprintOp::Tdg(q) => apply_gate_logic_128(ps, q, |st, qq| st.apply_tdg(qq)),
+                FingerprintOp::H(q) => apply_gate_logic_128(ps, q, |st, qq| st.apply_h(qq)),
+                FingerprintOp::Sx(q) => apply_gate_logic_128(ps, q, |st, qq| st.apply_sx(qq)),
+                FingerprintOp::RzBits(q, bits) => apply_rz_logic_128(ps, q, bits),
+                FingerprintOp::Cx(c, t) => apply_cx_logic_128(ps, c, t),
+            };
+        }
+        ps
+    }
+
+    fn lcg(rng: &mut u64) -> u64 {
+        *rng = rng
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
+        *rng
+    }
+
+    fn bits_f64(theta: f64) -> i64 {
+        theta.to_bits() as i64
+    }
+
+    fn ibm_h(q: i64) -> [FingerprintOp; 3] {
+        [
+            FingerprintOp::RzBits(q, bits_f64(std::f64::consts::FRAC_PI_2)),
+            FingerprintOp::Sx(q),
+            FingerprintOp::RzBits(q, bits_f64(std::f64::consts::FRAC_PI_2)),
+        ]
+    }
+
+    fn expand_nam_h_to_ibm(ops: &[FingerprintOp]) -> Vec<FingerprintOp> {
+        let mut out = Vec::with_capacity(ops.len() + 4);
+        for op in ops {
+            if let FingerprintOp::H(q) = *op {
+                out.extend_from_slice(&ibm_h(q));
+            } else {
+                out.push(*op);
+            }
+        }
+        out
+    }
+
+    fn random_ops(rng: &mut u64, n: i64, len: usize) -> Vec<FingerprintOp> {
+        const ANGLES: [f64; 5] = [0.3, 0.7, -1.1, std::f64::consts::FRAC_PI_8, 2.5];
+        let mut ops = Vec::with_capacity(len + 4);
+        for _ in 0..len {
+            let q = (lcg(rng) % n as u64) as i64;
+            match lcg(rng) % 12 {
+                0 => ops.push(FingerprintOp::X(q)),
+                1 => ops.push(FingerprintOp::Z(q)),
+                2 => ops.push(FingerprintOp::S(q)),
+                3 => ops.push(FingerprintOp::Sdg(q)),
+                4 => ops.push(FingerprintOp::T(q)),
+                5 => ops.push(FingerprintOp::Tdg(q)),
+                6 => ops.push(FingerprintOp::H(q)),
+                7 => ops.push(FingerprintOp::Sx(q)),
+                8 => {
+                    let theta = ANGLES[(lcg(rng) as usize) % ANGLES.len()];
+                    ops.push(FingerprintOp::RzBits(q, bits_f64(theta)));
+                }
+                9 => ops.extend_from_slice(&ibm_h(q)),
+                _ => {
+                    let mut t = (lcg(rng) % n as u64) as i64;
+                    if t == q {
+                        t = (t + 1) % n;
+                    }
+                    ops.push(FingerprintOp::Cx(q, t));
+                }
+            }
+        }
+        ops
+    }
+
+    fn assert_ops_match_ffi_64(n: i64, ops: &[FingerprintOp]) {
+        let folded = fold_ops_64(n, ops);
+        let via_ops = fingerprint_ops_logic_64(n, ops).expect("supported ops");
+        assert_eq!(
+            via_ops,
+            state_fingerprint_logic_64(folded),
+            "fingerprint_ops must match FFI-folded eq_fingerprint for {ops:?}"
+        );
+    }
+
     #[test]
     fn fingerprint_ops_matches_ffi_eq_fingerprint() {
         let bits = |theta: f64| theta.to_bits() as i64;
@@ -1536,6 +1627,57 @@ mod fingerprint_tests {
             "unsupported gates must refuse"
         );
         assert_eq!(fingerprint_ops_logic_64(1, &[]).unwrap().contains("num_qubits: 1"), true);
+    }
+
+    #[test]
+    fn fingerprint_ops_random_circuits_match_ffi_including_s3_pairs() {
+        let mut rng = 0xF1A7_5EED_0000_0007u64;
+        for n in [2i64, 3] {
+            for _ in 0..24 {
+                let prefix = random_ops(&mut rng, n, 8);
+                assert_ops_match_ffi_64(n, &prefix);
+
+                let ibm = expand_nam_h_to_ibm(&prefix);
+                assert_eq!(
+                    fingerprint_ops_logic_64(n, &prefix),
+                    fingerprint_ops_logic_64(n, &ibm),
+                    "nam H and ibm RZ SX RZ must share a fingerprint after a random prefix"
+                );
+
+                if n >= 2 {
+                    let mut h01 = prefix.clone();
+                    h01.extend_from_slice(&[FingerprintOp::H(0), FingerprintOp::H(1)]);
+                    let mut h10 = prefix.clone();
+                    h10.extend_from_slice(&[FingerprintOp::H(1), FingerprintOp::H(0)]);
+                    assert_ops_match_ffi_64(n, &h01);
+                    assert_eq!(
+                        fingerprint_ops_logic_64(n, &h01),
+                        fingerprint_ops_logic_64(n, &h10),
+                        "commuting H order must share a fingerprint after a random prefix"
+                    );
+                }
+
+                let q = (lcg(&mut rng) % n as u64) as i64;
+                let mut hx = prefix.clone();
+                hx.extend_from_slice(&[FingerprintOp::H(q), FingerprintOp::X(q)]);
+                let mut zh = prefix.clone();
+                zh.extend_from_slice(&[FingerprintOp::Z(q), FingerprintOp::H(q)]);
+                assert_ops_match_ffi_64(n, &hx);
+                assert_eq!(
+                    fingerprint_ops_logic_64(n, &hx),
+                    fingerprint_ops_logic_64(n, &zh),
+                    "HX and ZH must share a fingerprint after a random prefix"
+                );
+            }
+        }
+
+        let sample = random_ops(&mut rng, 2, 6);
+        let via_128 = fingerprint_ops_logic_128(2, &sample).expect("supported ops");
+        assert_eq!(
+            via_128,
+            state_fingerprint_logic_128(fold_ops_128(2, &sample)),
+            "128-bit fingerprint_ops must match FFI-folded eq_fingerprint"
+        );
     }
 
     #[test]
@@ -1733,6 +1875,7 @@ mod gray_tests {
 
     fn assert_synth_sound_64(state: PSum64) {
         let n = state.num_qubits as i64;
+        let n_plus_m = state.num_qubits as usize + state.num_path_vars as usize;
         let gray = synthesize_gray_logic_64(state.clone(), 1_000, i64::MAX, 1, 1);
         let steiner =
             synthesize_steiner_logic_64(state.clone(), 1_000, i64::MAX, String::new(), 1, 1);
@@ -1753,9 +1896,17 @@ mod gray_tests {
             );
             assert_eq!(
                 state_fingerprint_logic_64(state.clone()),
-                state_fingerprint_logic_64(replayed),
+                state_fingerprint_logic_64(replayed.clone()),
                 "{kind} replay fingerprint failed (instructions: {out})"
             );
+            if n_plus_m <= 24 && !state.is_overflowed() {
+                let ma = engine_64::tests::pathsum_to_matrix(&state);
+                let mb = engine_64::tests::pathsum_to_matrix(&replayed);
+                assert!(
+                    engine_64::tests::matrices_match_up_to_global_phase(&ma, &mb, 1e-6),
+                    "{kind} replay matrices differ (instructions: {out})"
+                );
+            }
         }
     }
 
@@ -1829,6 +1980,21 @@ mod gray_tests {
             "None"
         );
         assert_eq!(synthesize_pmh_logic_64(ps, 1_000), "None");
+
+        let mut state128 = engine_128::EvaluatedPathSum::new_id(1);
+        state128.num_path_vars = 124;
+        state128.apply_h(0);
+        assert!(state128.is_overflowed());
+        let ps128 = PSum128::new(Arc::new(state128));
+        assert_eq!(
+            synthesize_gray_logic_128(ps128.clone(), 1_000, i64::MAX, 50, 1),
+            "None"
+        );
+        assert_eq!(
+            synthesize_steiner_logic_128(ps128.clone(), 1_000, i64::MAX, String::new(), 50, 1),
+            "None"
+        );
+        assert_eq!(synthesize_pmh_logic_128(ps128, 1_000), "None");
     }
 
     #[test]
