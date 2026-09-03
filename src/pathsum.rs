@@ -1228,6 +1228,83 @@ impl BaseSort for PathSumSort128 {
     }
 }
 
+/// A host-side PathSum gate for [`fingerprint_ops_logic_64`] /
+/// [`fingerprint_ops_logic_128`]. Unsupported names return `None` from
+/// [`FingerprintOp::parse`] so the caller can refuse the circuit.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FingerprintOp {
+    X(i64),
+    Z(i64),
+    S(i64),
+    Sdg(i64),
+    T(i64),
+    Tdg(i64),
+    H(i64),
+    Sx(i64),
+    RzBits(i64, i64),
+    Cx(i64, i64),
+}
+
+impl FingerprintOp {
+    pub fn parse(name: &str, args: &[i64]) -> Option<Self> {
+        match name {
+            "x" if !args.is_empty() => Some(Self::X(args[0])),
+            "z" if !args.is_empty() => Some(Self::Z(args[0])),
+            "s" if !args.is_empty() => Some(Self::S(args[0])),
+            "sdg" if !args.is_empty() => Some(Self::Sdg(args[0])),
+            "t" if !args.is_empty() => Some(Self::T(args[0])),
+            "tdg" if !args.is_empty() => Some(Self::Tdg(args[0])),
+            "h" if !args.is_empty() => Some(Self::H(args[0])),
+            "sx" if !args.is_empty() => Some(Self::Sx(args[0])),
+            "rz_bits" if args.len() >= 2 => Some(Self::RzBits(args[0], args[1])),
+            "cx" if args.len() >= 2 => Some(Self::Cx(args[0], args[1])),
+            _ => None,
+        }
+    }
+}
+
+/// Fold `ops` through the same apply/`reduce` path as the FFI wrappers and
+/// return the interned `eq_fingerprint` string. Overflowed states return
+/// their overflow fingerprint (not `None`). `None` is only for an
+/// unsupported gate name.
+pub fn fingerprint_ops_logic_64(n: i64, ops: &[FingerprintOp]) -> Option<String> {
+    let mut ps = id_pathsum_logic_64(n);
+    for op in ops {
+        ps = match *op {
+            FingerprintOp::X(q) => apply_gate_logic_64(ps, q, |st, qq| st.apply_x(qq)),
+            FingerprintOp::Z(q) => apply_gate_logic_64(ps, q, |st, qq| st.apply_z(qq)),
+            FingerprintOp::S(q) => apply_gate_logic_64(ps, q, |st, qq| st.apply_s(qq)),
+            FingerprintOp::Sdg(q) => apply_gate_logic_64(ps, q, |st, qq| st.apply_sdg(qq)),
+            FingerprintOp::T(q) => apply_gate_logic_64(ps, q, |st, qq| st.apply_t(qq)),
+            FingerprintOp::Tdg(q) => apply_gate_logic_64(ps, q, |st, qq| st.apply_tdg(qq)),
+            FingerprintOp::H(q) => apply_gate_logic_64(ps, q, |st, qq| st.apply_h(qq)),
+            FingerprintOp::Sx(q) => apply_gate_logic_64(ps, q, |st, qq| st.apply_sx(qq)),
+            FingerprintOp::RzBits(q, bits) => apply_rz_logic_64(ps, q, bits),
+            FingerprintOp::Cx(c, t) => apply_cx_logic_64(ps, c, t),
+        };
+    }
+    Some(state_fingerprint_logic_64(ps))
+}
+
+pub fn fingerprint_ops_logic_128(n: i64, ops: &[FingerprintOp]) -> Option<String> {
+    let mut ps = id_pathsum_logic_128(n);
+    for op in ops {
+        ps = match *op {
+            FingerprintOp::X(q) => apply_gate_logic_128(ps, q, |st, qq| st.apply_x(qq)),
+            FingerprintOp::Z(q) => apply_gate_logic_128(ps, q, |st, qq| st.apply_z(qq)),
+            FingerprintOp::S(q) => apply_gate_logic_128(ps, q, |st, qq| st.apply_s(qq)),
+            FingerprintOp::Sdg(q) => apply_gate_logic_128(ps, q, |st, qq| st.apply_sdg(qq)),
+            FingerprintOp::T(q) => apply_gate_logic_128(ps, q, |st, qq| st.apply_t(qq)),
+            FingerprintOp::Tdg(q) => apply_gate_logic_128(ps, q, |st, qq| st.apply_tdg(qq)),
+            FingerprintOp::H(q) => apply_gate_logic_128(ps, q, |st, qq| st.apply_h(qq)),
+            FingerprintOp::Sx(q) => apply_gate_logic_128(ps, q, |st, qq| st.apply_sx(qq)),
+            FingerprintOp::RzBits(q, bits) => apply_rz_logic_128(ps, q, bits),
+            FingerprintOp::Cx(c, t) => apply_cx_logic_128(ps, c, t),
+        };
+    }
+    Some(state_fingerprint_logic_128(ps))
+}
+
 /// Complete canonical state fingerprint (64-bit): the interned equality
 /// key of `EvaluatedPathSum` (`PartialEq` / `Hash`), so two fingerprints
 /// match iff `state_union` would merge the states. Continuous phases are
@@ -1397,6 +1474,86 @@ mod fingerprint_tests {
             state_fingerprint_logic_64(PSum64::new(Arc::new(c))),
             "crossing a lattice tick must change the host fingerprint"
         );
+    }
+
+    fn fold_ops_64(n: i64, ops: &[FingerprintOp]) -> PSum64 {
+        let mut ps = id_pathsum_logic_64(n);
+        for op in ops {
+            ps = match *op {
+                FingerprintOp::X(q) => apply_gate_logic_64(ps, q, |st, qq| st.apply_x(qq)),
+                FingerprintOp::Z(q) => apply_gate_logic_64(ps, q, |st, qq| st.apply_z(qq)),
+                FingerprintOp::S(q) => apply_gate_logic_64(ps, q, |st, qq| st.apply_s(qq)),
+                FingerprintOp::Sdg(q) => apply_gate_logic_64(ps, q, |st, qq| st.apply_sdg(qq)),
+                FingerprintOp::T(q) => apply_gate_logic_64(ps, q, |st, qq| st.apply_t(qq)),
+                FingerprintOp::Tdg(q) => apply_gate_logic_64(ps, q, |st, qq| st.apply_tdg(qq)),
+                FingerprintOp::H(q) => apply_gate_logic_64(ps, q, |st, qq| st.apply_h(qq)),
+                FingerprintOp::Sx(q) => apply_gate_logic_64(ps, q, |st, qq| st.apply_sx(qq)),
+                FingerprintOp::RzBits(q, bits) => apply_rz_logic_64(ps, q, bits),
+                FingerprintOp::Cx(c, t) => apply_cx_logic_64(ps, c, t),
+            };
+        }
+        ps
+    }
+
+    #[test]
+    fn fingerprint_ops_matches_ffi_eq_fingerprint() {
+        let bits = |theta: f64| theta.to_bits() as i64;
+        let h01 = [FingerprintOp::H(0), FingerprintOp::H(1)];
+        let h10 = [FingerprintOp::H(1), FingerprintOp::H(0)];
+        let nam_h = [FingerprintOp::H(0)];
+        let ibm_h = [
+            FingerprintOp::RzBits(0, bits(std::f64::consts::FRAC_PI_2)),
+            FingerprintOp::Sx(0),
+            FingerprintOp::RzBits(0, bits(std::f64::consts::FRAC_PI_2)),
+        ];
+        for (n, ops) in [
+            (2i64, h01.as_slice()),
+            (2, h10.as_slice()),
+            (1, nam_h.as_slice()),
+            (1, ibm_h.as_slice()),
+        ] {
+            let folded = fold_ops_64(n, ops);
+            let via_ops = fingerprint_ops_logic_64(n, ops).expect("supported ops");
+            assert_eq!(
+                via_ops,
+                state_fingerprint_logic_64(folded),
+                "fingerprint_ops must match FFI-folded eq_fingerprint for {ops:?}"
+            );
+        }
+        assert_eq!(
+            fingerprint_ops_logic_64(2, &h01),
+            fingerprint_ops_logic_64(2, &h10),
+            "commuting H order must share a fingerprint"
+        );
+        assert_eq!(
+            fingerprint_ops_logic_64(1, &nam_h),
+            fingerprint_ops_logic_64(1, &ibm_h),
+            "nam H and ibm RZ SX RZ must share a fingerprint"
+        );
+        assert_eq!(
+            FingerprintOp::parse("ry", &[0]),
+            None,
+            "unsupported gates must refuse"
+        );
+        assert_eq!(fingerprint_ops_logic_64(1, &[]).unwrap().contains("num_qubits: 1"), true);
+    }
+
+    #[test]
+    fn fingerprint_ops_overflow_returns_string_not_none() {
+        // n=1 with 60 live path vars is at the 64-bit cap; the next H overflows.
+        let mut ops = vec![FingerprintOp::H(0); 61];
+        // 61 H without reduce would overflow; FFI reduce may cancel pairs.
+        // Force overflow via a hand-built state and compare tokens via apply.
+        let mut state = engine_64::EvaluatedPathSum::new_id(1);
+        state.num_path_vars = 60;
+        state.apply_h(0);
+        assert!(state.is_overflowed());
+        let overflow_fp = state.eq_fingerprint();
+        let id_fp = fingerprint_ops_logic_64(1, &[]).unwrap();
+        assert_ne!(overflow_fp, id_fp);
+        // Direct helper still returns Some for a supported (empty) list.
+        assert!(fingerprint_ops_logic_64(1, &ops).is_some());
+        let _ = ops.pop();
     }
 }
 

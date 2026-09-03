@@ -34,6 +34,24 @@ fn synthesize_cnot_matrix_128(matrix: Vec<u128>, num_qubits: usize) -> PyResult<
 }
 
 #[pyfunction]
+fn fingerprint_ops_64(n: i64, ops: Vec<(String, Vec<i64>)>) -> Option<String> {
+    let mut parsed = Vec::with_capacity(ops.len());
+    for (name, args) in &ops {
+        parsed.push(egglog::pathsum::FingerprintOp::parse(name, args)?);
+    }
+    egglog::pathsum::fingerprint_ops_logic_64(n, &parsed)
+}
+
+#[pyfunction]
+fn fingerprint_ops_128(n: i64, ops: Vec<(String, Vec<i64>)>) -> Option<String> {
+    let mut parsed = Vec::with_capacity(ops.len());
+    for (name, args) in &ops {
+        parsed.push(egglog::pathsum::FingerprintOp::parse(name, args)?);
+    }
+    egglog::pathsum::fingerprint_ops_logic_128(n, &parsed)
+}
+
+#[pyfunction]
 fn shutdown_tracing(py: Python<'_>) -> PyResult<()> {
     py.detach(crate::tracing_otel::shutdown_tracing)
         .map_err(pyo3::exceptions::PyRuntimeError::new_err)
@@ -70,6 +88,8 @@ fn bindings(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(shutdown_tracing, m)?)?;
     m.add_function(wrap_pyfunction!(synthesize_cnot_matrix_64, m)?)?;
     m.add_function(wrap_pyfunction!(synthesize_cnot_matrix_128, m)?)?;
+    m.add_function(wrap_pyfunction!(fingerprint_ops_64, m)?)?;
+    m.add_function(wrap_pyfunction!(fingerprint_ops_128, m)?)?;
     crate::conversions::add_structs_to_module(m)?;
     crate::conversions::add_enums_to_module(m)?;
 

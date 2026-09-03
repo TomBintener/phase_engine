@@ -2,6 +2,7 @@
 
 ## [Unreleased] - ReleaseDate
 
+- PathSum: pyo3 `fingerprint_ops_64` / `fingerprint_ops_128` fold a gate list through the engine and return `eq_fingerprint` without building an `EGraph`.
 - PathSum: continuous parities are stored as one XOR mask per angle (linear in the variables). `reduce()`, the gauge, and Steiner/Gray read that mask directly.
 - PathSum: H/SX capacity overflow sets a unique `overflow_id` and leaves the state unchanged instead of `assert!`. Overflowed states never intern-equal a well-formed state or each other; later gates, `reduce()`, and synthesis are no-ops / `"None"`.
 - PathSum: Steiner and Gray refuse a state when a continuous parity is not a linear XOR of input qubits (path-variable bits or product monomials). Previously Steiner pushed `variable_mask` and dropped those bits, attaching the angle to leftover qubit wires.
