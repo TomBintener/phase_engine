@@ -2,6 +2,7 @@
 
 ## [Unreleased] - ReleaseDate
 
+- PathSum: Steiner and Gray refuse a state when a continuous parity is not a linear XOR of input qubits (path-variable bits or product monomials). Previously Steiner pushed `variable_mask` and dropped those bits, attaching the angle to leftover qubit wires.
 - PathSum: fold constant-1 continuous parities (global phase) so interned Eq matches `X RZ(θ) ≡ RZ(−θ) X`.
 - PathSum: continuous phases are integer lattice ticks (2^29 per turn) instead of `f64` snapped to 1e-8, so π/4 multiples, negation and modular sums are exact. `extract_cliffords` promotes only the even π/4 quotient and keeps `θ mod π/2` continuous (T/Tdg go through the parity table like `RZ(π/4)`), which makes the discrete/continuous split a function of each parity's total angle: `RZ(θ) T`, `T RZ(θ)` and `RZ(θ+π/4)` now intern equal, including on multi-qubit parities. Host fingerprints print ticks.
 - PathSum: `reduce()` (and the `x` / `cx` FFI wrappers) canonicalize the path-variable gauge: row echelon over `out_state`, bare parities for internal variables, a canonical `v` vs `1⊕v` choice, and a signature-based relabeling. Placement tests assert the same interned identities as the rest of the engine suite: commuting `H`s in either order, `SX` vs `H S H`, `SXdg` vs `H Sdg H`, nam `h` vs ibm `RZ(π/2) SX RZ(π/2)`, `H X` vs `Z H`, and `H0 H1 CX01` vs `CX10 H0 H1`. Costs about 2.8× on the SX-heavy `pathsum_benchmarking` workload (up to 24 live path variables) and more on Nam-style RZ/SX/CX ladders; H-free states pay one early return.

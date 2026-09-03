@@ -269,6 +269,38 @@ fn rank_m_minus_i_128(state: &EvaluatedPathSum128) -> i64 {
     }
     rank as i64
 }
+/// Continuous parities must be linear XORs of *input* qubits. Path-variable
+/// bits or product monomials cannot be fed to Steiner/Gray: `variable_mask`
+/// is the OR of monomials, so a live path var would be silently dropped and
+/// the angle attached to leftover qubit bits.
+fn continuous_parities_are_qubit_linear_64(state: &EvaluatedPathSum64) -> bool {
+    let n = state.num_qubits as usize;
+    let valid_mask: u64 = if n >= 64 { u64::MAX } else { (1u64 << n) - 1 };
+    for p in &state.continuous_poly.parities {
+        if (p.variable_mask & !valid_mask) != 0 {
+            return false;
+        }
+        if p.terms.iter().any(|&t| t == 0 || t.count_ones() != 1) {
+            return false;
+        }
+    }
+    true
+}
+
+fn continuous_parities_are_qubit_linear_128(state: &EvaluatedPathSum128) -> bool {
+    let n = state.num_qubits as usize;
+    let valid_mask: u128 = if n >= 128 { u128::MAX } else { (1u128 << n) - 1 };
+    for p in &state.continuous_poly.parities {
+        if (p.variable_mask & !valid_mask) != 0 {
+            return false;
+        }
+        if p.terms.iter().any(|&t| t == 0 || t.count_ones() != 1) {
+            return false;
+        }
+    }
+    true
+}
+
 /// Qubits whose `out_state` carries a constant-1 term (net X / affine offset).
 /// Linear synthesizers only see `variable_mask`; callers append a trailing X layer.
 fn affine_x_offsets_64(state: &PSum64) -> Vec<usize> {
@@ -322,6 +354,9 @@ pub fn synthesize_steiner_logic_64(
     rz_weight: i64,
 ) -> String {
     if gate_count <= 2 {
+        return "None".to_string();
+    }
+    if !continuous_parities_are_qubit_linear_64(&state) {
         return "None".to_string();
     }
     let valid_mask = (1_u64 << state.num_qubits) - 1;
@@ -572,6 +607,9 @@ pub fn synthesize_gray_logic_64(
     if gate_count <= 2 {
         return "None".to_string();
     }
+    if !continuous_parities_are_qubit_linear_64(&state) {
+        return "None".to_string();
+    }
     let n = state.num_qubits as usize;
     let valid_mask: u64 = if n >= 64 { u64::MAX } else { (1u64 << n) - 1 };
 
@@ -593,12 +631,6 @@ pub fn synthesize_gray_logic_64(
 
     let mut parities: Vec<(u64, f64)> = Vec::new();
     for (i, p) in state.continuous_poly.parities.iter().enumerate() {
-        if (p.variable_mask & !valid_mask) != 0 {
-            return "None".to_string();
-        }
-        if p.terms.iter().any(|&t| t == 0 || t.count_ones() != 1) {
-            return "None".to_string();
-        }
         parities.push((p.variable_mask, crate::engine::ticks_to_angle(state.continuous_poly.phases[i])));
     }
 
@@ -643,6 +675,9 @@ pub fn synthesize_steiner_logic_128(
     rz_weight: i64,
 ) -> String {
     if gate_count <= 2 {
+        return "None".to_string();
+    }
+    if !continuous_parities_are_qubit_linear_128(&state) {
         return "None".to_string();
     }
     let valid_mask = (1_u128 << state.num_qubits) - 1;
@@ -809,6 +844,9 @@ pub fn synthesize_gray_logic_128(
     if gate_count <= 2 {
         return "None".to_string();
     }
+    if !continuous_parities_are_qubit_linear_128(&state) {
+        return "None".to_string();
+    }
     let n = state.num_qubits as usize;
     let valid_mask: u128 = if n >= 128 {
         u128::MAX
@@ -832,12 +870,6 @@ pub fn synthesize_gray_logic_128(
 
     let mut parities: Vec<(u128, f64)> = Vec::new();
     for (i, p) in state.continuous_poly.parities.iter().enumerate() {
-        if (p.variable_mask & !valid_mask) != 0 {
-            return "None".to_string();
-        }
-        if p.terms.iter().any(|&t| t == 0 || t.count_ones() != 1) {
-            return "None".to_string();
-        }
         parities.push((p.variable_mask, crate::engine::ticks_to_angle(state.continuous_poly.phases[i])));
     }
 
@@ -1361,6 +1393,7 @@ mod fingerprint_tests {
 #[cfg(test)]
 mod gray_tests {
     use super::*;
+    use crate::engine::{engine_128, engine_64};
 
     fn bits(theta: f64) -> i64 {
         // Snap like the Python DSL does so angles are grid-aligned.
@@ -1493,6 +1526,119 @@ mod gray_tests {
         ps = apply_cx_logic_64(ps, 0, 1);
         let out = synthesize_gray_logic_64(ps, 1_000, i64::MAX, 50, 1);
         assert_eq!(out, "None");
+    }
+
+    fn assert_synth_sound_64(state: PSum64) {
+        let n = state.num_qubits as i64;
+        let gray = synthesize_gray_logic_64(state.clone(), 1_000, i64::MAX, 1, 1);
+        let steiner =
+            synthesize_steiner_logic_64(state.clone(), 1_000, i64::MAX, String::new(), 1, 1);
+        let pmh = synthesize_pmh_logic_64(state.clone(), 1_000);
+        for (kind, out) in [("gray", gray), ("steiner", steiner), ("pmh", pmh)] {
+            if out == "None" {
+                continue;
+            }
+            let replayed = if out == "empty" {
+                id_pathsum_logic_64(n)
+            } else {
+                replay(&out, n)
+            };
+            assert_eq!(
+                state.clone().into_inner(),
+                replayed.clone().into_inner(),
+                "{kind} replay interned Eq failed (instructions: {out})"
+            );
+            assert_eq!(
+                state_fingerprint_logic_64(state.clone()),
+                state_fingerprint_logic_64(replayed),
+                "{kind} replay fingerprint failed (instructions: {out})"
+            );
+        }
+    }
+
+    #[test]
+    fn refuses_h_then_rz_path_var_continuous() {
+        let mut ps = id_pathsum_logic_64(2);
+        ps = apply_gate_logic_64(ps, 0, |st, q| st.apply_h(q));
+        ps = apply_rz_logic_64(ps, 0, bits(0.37));
+        assert_eq!(
+            synthesize_gray_logic_64(ps.clone(), 1_000, i64::MAX, 50, 1),
+            "None"
+        );
+        assert_eq!(
+            synthesize_steiner_logic_64(ps, 1_000, i64::MAX, String::new(), 50, 1),
+            "None"
+        );
+    }
+
+    #[test]
+    fn refuses_path_var_bits_on_continuous_parity_with_clean_out_state() {
+        // out_state is identity (qubit-linear) but a continuous parity carries
+        // a path-variable bit. Steiner used to drop that bit via variable_mask.
+        let mut state = engine_64::EvaluatedPathSum::new_id(2);
+        state.num_path_vars = 1;
+        let v = 1u64 << 2;
+        state.continuous_poly.apply_phase(
+            engine_64::BooleanPoly::from_terms(smallvec::smallvec![1u64 << 0, v]),
+            0.37,
+        );
+        let ps = PSum64::new(Arc::new(state));
+        assert_eq!(
+            synthesize_gray_logic_64(ps.clone(), 1_000, i64::MAX, 50, 1),
+            "None"
+        );
+        assert_eq!(
+            synthesize_steiner_logic_64(ps.clone(), 1_000, i64::MAX, String::new(), 50, 1),
+            "None"
+        );
+
+        let mut state128 = engine_128::EvaluatedPathSum::new_id(2);
+        state128.num_path_vars = 1;
+        let v128 = 1u128 << 2;
+        state128.continuous_poly.apply_phase(
+            engine_128::BooleanPoly::from_terms(smallvec::smallvec![1u128 << 0, v128]),
+            0.37,
+        );
+        let ps128 = PSum128::new(Arc::new(state128));
+        assert_eq!(
+            synthesize_gray_logic_128(ps128.clone(), 1_000, i64::MAX, 50, 1),
+            "None"
+        );
+        assert_eq!(
+            synthesize_steiner_logic_128(ps128, 1_000, i64::MAX, String::new(), 50, 1),
+            "None"
+        );
+    }
+
+    #[test]
+    fn hfree_synth_is_sound() {
+        let mut rng = 0xA11C_E555_0000_0006u64;
+        let mut lcg = || {
+            rng = rng
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            rng
+        };
+        for n in [2i64, 3, 4] {
+            for _ in 0..16 {
+                let mut ps = id_pathsum_logic_64(n);
+                for _ in 0..8 {
+                    let q = (lcg() % n as u64) as i64;
+                    match lcg() % 3 {
+                        0 => ps = apply_gate_logic_64(ps, q, |st, qq| st.apply_x(qq)),
+                        1 if n > 1 => {
+                            let mut t = (lcg() % n as u64) as i64;
+                            if t == q {
+                                t = (t + 1) % n;
+                            }
+                            ps = apply_cx_logic_64(ps, q, t);
+                        }
+                        _ => ps = apply_rz_logic_64(ps, q, bits(0.37 + (lcg() % 7) as f64 * 0.11)),
+                    }
+                }
+                assert_synth_sound_64(ps);
+            }
+        }
     }
 
     #[test]

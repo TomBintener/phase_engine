@@ -15,6 +15,43 @@ macro_rules! define_soundness_tests_logic {
     ) => {
         const TOL: f64 = 1e-6;
 
+        /// Interned `Eq` and the dense matrix must agree (up to global phase).
+        /// Skips the matrix check when the state is too wide for brute force.
+        fn assert_unitarily_equal(a: &EvaluatedPathSum, b: &EvaluatedPathSum) {
+            assert_eq!(a, b, "interned Eq failed for unitarily-compared states");
+            let n = a.num_qubits as usize;
+            let m = a.num_path_vars as usize;
+            if n + m > 24 {
+                return;
+            }
+            let ma = pathsum_to_matrix(a);
+            let mb = pathsum_to_matrix(b);
+            assert!(
+                matrices_match_up_to_global_phase(&ma, &mb, TOL),
+                "interned-equal states denote different transformations"
+            );
+        }
+
+        /// If the dense matrices differ, interned `Eq` must not hold.
+        /// Skips the matrix check when either state is too wide for brute force;
+        /// then only the interned inequality is required.
+        fn assert_sound_unequal(a: &EvaluatedPathSum, b: &EvaluatedPathSum) {
+            let n = a.num_qubits.max(b.num_qubits) as usize;
+            let m = a.num_path_vars.max(b.num_path_vars) as usize;
+            if n + m > 24 {
+                assert_ne!(a, b, "wide states must not intern-equal when asserted unequal");
+                return;
+            }
+            let ma = pathsum_to_matrix(a);
+            let mb = pathsum_to_matrix(b);
+            if !matrices_match_up_to_global_phase(&ma, &mb, TOL) {
+                assert_ne!(
+                    a, b,
+                    "unitarily different states intern-equal"
+                );
+            }
+        }
+
         struct XorShift(u64);
 
         impl XorShift {
@@ -239,6 +276,7 @@ macro_rules! define_soundness_tests_logic {
                         "seed {seed}: equal path sums denote different transformations"
                     );
                 }
+                assert_sound_unequal(&s1, &s2);
             }
         }
 
@@ -359,7 +397,7 @@ macro_rules! define_soundness_tests_logic {
             b.apply_h(0);
             b.apply_z(0);
             b.reduce();
-            assert_eq!(a, b, "HX and ZH must be Eq-equal from I_n");
+            assert_unitarily_equal(&a, &b);
 
             let mut a = EvaluatedPathSum::new_id(2);
             a.apply_h(0);
@@ -371,7 +409,7 @@ macro_rules! define_soundness_tests_logic {
             b.apply_cx(0, 1);
             b.apply_x(1);
             b.reduce();
-            assert_eq!(a, b, "X;CX and CX;X on the target must be Eq-equal from I_n");
+            assert_unitarily_equal(&a, &b);
         }
 
         /// Sanity: identical circuits must produce Eq-equal canonical states.
