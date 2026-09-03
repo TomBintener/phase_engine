@@ -478,13 +478,16 @@ macro_rules! define_tests_logic {
 
         #[test]
         fn test_sx_h_s_h_equivalence() {
-            let mut s2 = EvaluatedPathSum::new_id(1);
-            s2.apply_h(0);
-            s2.apply_s(0);
-            s2.apply_h(0);
-            s2.reduce();
-            // Verifies the pi/2 Gaussian elimination successfully reduces the state
-            assert_eq!(s2.num_path_vars, 1);
+            let mut sx = EvaluatedPathSum::new_id(1);
+            sx.apply_sx(0);
+            sx.reduce();
+            let mut hsh = EvaluatedPathSum::new_id(1);
+            hsh.apply_h(0);
+            hsh.apply_s(0);
+            hsh.apply_h(0);
+            hsh.reduce();
+            assert_eq!(sx.num_path_vars, 1);
+            assert_eq!(sx, hsh, "SX and H S H must intern equal");
         }
 
         #[test]
@@ -516,12 +519,17 @@ macro_rules! define_tests_logic {
 
         #[test]
         fn test_sxdg_h_sdg_h_equivalence() {
-            let mut s2 = EvaluatedPathSum::new_id(1);
-            s2.apply_h(0);
-            s2.apply_sdg(0);
-            s2.apply_h(0);
-            s2.reduce();
-            assert_eq!(s2.num_path_vars, 1);
+            let mut sxdg = EvaluatedPathSum::new_id(1);
+            sxdg.apply_x(0);
+            sxdg.apply_sx(0);
+            sxdg.reduce();
+            let mut hsdgh = EvaluatedPathSum::new_id(1);
+            hsdgh.apply_h(0);
+            hsdgh.apply_sdg(0);
+            hsdgh.apply_h(0);
+            hsdgh.reduce();
+            assert_eq!(sxdg.num_path_vars, 1);
+            assert_eq!(sxdg, hsdgh, "SXdg and H Sdg H must intern equal");
         }
 
         #[test]
@@ -550,6 +558,60 @@ macro_rules! define_tests_logic {
             b.apply_x(1);
             b.reduce();
             assert_eq!(a, b, "X on CX target commutes from I_n");
+        }
+
+        #[test]
+        fn test_commuting_h_order_interns_equal() {
+            let mut a = EvaluatedPathSum::new_id(2);
+            a.apply_h(0);
+            a.apply_h(1);
+            a.reduce();
+            let mut b = EvaluatedPathSum::new_id(2);
+            b.apply_h(1);
+            b.apply_h(0);
+            b.reduce();
+            assert_eq!(a, b, "H0 H1 and H1 H0 must intern equal");
+        }
+
+        #[test]
+        fn test_nam_h_equals_ibm_rz_sx_rz() {
+            let mut nam = EvaluatedPathSum::new_id(1);
+            nam.apply_h(0);
+            nam.reduce();
+            let mut ibm = EvaluatedPathSum::new_id(1);
+            ibm.apply_rz(0, std::f64::consts::FRAC_PI_2);
+            ibm.apply_sx(0);
+            ibm.apply_rz(0, std::f64::consts::FRAC_PI_2);
+            ibm.reduce();
+            assert_eq!(nam, ibm, "nam H and ibm RZ(π/2) SX RZ(π/2) must intern equal");
+        }
+
+        #[test]
+        fn test_h_x_equals_z_h() {
+            let mut hx = EvaluatedPathSum::new_id(1);
+            hx.apply_h(0);
+            hx.apply_x(0);
+            hx.reduce();
+            let mut zh = EvaluatedPathSum::new_id(1);
+            zh.apply_z(0);
+            zh.apply_h(0);
+            zh.reduce();
+            assert_eq!(hx, zh, "H X and Z H must intern equal");
+        }
+
+        #[test]
+        fn test_h0_h1_cx01_equals_cx10_h0_h1() {
+            let mut a = EvaluatedPathSum::new_id(2);
+            a.apply_h(0);
+            a.apply_h(1);
+            a.apply_cx(0, 1);
+            a.reduce();
+            let mut b = EvaluatedPathSum::new_id(2);
+            b.apply_cx(1, 0);
+            b.apply_h(0);
+            b.apply_h(1);
+            b.reduce();
+            assert_eq!(a, b, "H0 H1 CX01 and CX10 H0 H1 must intern equal");
         }
     }
 }
