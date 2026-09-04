@@ -2,6 +2,7 @@
 
 ## [Unreleased] - ReleaseDate
 
+- PathSum: `canonicalize_gauge` no longer subtracts from a zero mask in the power-of-two-or-zero test (`tv & (tv - 1)`). Debug `cargo test` was panicking with overflow; release wraparound already skipped empty monomials. Same guard on the other unsigned-mask sites in `reduce()`.
 - PathSum: pyo3 `fingerprint_ops_64` / `fingerprint_ops_128` fold a gate list through the engine and return `eq_fingerprint` without building an `EGraph`.
 - PathSum: continuous parities are stored as one XOR mask per angle (linear in the variables). `reduce()`, the gauge, and Steiner/Gray read that mask directly.
 - PathSum: H/SX capacity overflow sets a unique `overflow_id` and leaves the state unchanged instead of `assert!`. Overflowed states never intern-equal a well-formed state or each other; later gates, `reduce()`, and synthesis are no-ops / `"None"`.

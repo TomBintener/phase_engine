@@ -21,6 +21,15 @@ macro_rules! define_reduction_logic {
                     || continuous.parities.iter().any(|p| (*p & v_mask) != 0)
             }
 
+            /// True iff `mask` is empty or a single bit. Short-circuits on
+            /// zero so debug builds do not overflow on `0 - 1`. Release
+            /// wraparound of `0 - 1` is `MAX`, and `0 & MAX == 0`, so this
+            /// matches the intended power-of-two-or-zero skip.
+            #[inline(always)]
+            fn is_zero_or_pow2(mask: $primitive) -> bool {
+                mask == 0 || mask & (mask - 1) == 0
+            }
+
             /// Substitute `v := v XOR e` everywhere (an invertible affine change
             /// of one path variable, so the denoted operator is unchanged).
             /// `e` must not contain `v`.
@@ -108,7 +117,7 @@ macro_rules! define_reduction_logic {
                 let qubit_mask: $primitive = if lo >= <$primitive>::BITS as usize { <$primitive>::MAX } else { (1 as $primitive << lo) - 1 };
                 // Gate application keeps rows and parities affine in the path
                 // variables; bail on hand-built states that are not.
-                let nonlinear = |t: &$primitive| (*t & path_mask) != 0 && (*t & (*t - 1)) != 0;
+                let nonlinear = |t: &$primitive| (*t & path_mask) != 0 && !Self::is_zero_or_pow2(*t);
                 if self.out_state.iter().any(|p| p.terms.iter().any(nonlinear)) {
                     return false;
                 }
@@ -121,7 +130,7 @@ macro_rules! define_reduction_logic {
                 // the one with the fewest phase-term occurrences (cheapest
                 // substitution), ties to the lowest bit.
                 let pick = |fresh: $primitive, phase_poly: &CanonicalPhasePoly| -> $primitive {
-                    if fresh & (fresh - 1) == 0 { return fresh; }
+                    if Self::is_zero_or_pow2(fresh) { return fresh; }
                     let mut counts = [0u32; <$primitive>::BITS as usize];
                     for t in phase_poly.terms.iter() {
                         let mut pv = t.monomial() & fresh;
@@ -276,8 +285,8 @@ macro_rules! define_reduction_logic {
                 for (parity, &ticks) in self.continuous_poly.parities.iter().zip(self.continuous_poly.phases.iter()) {
                     let pv = *parity & rest_mask;
                     if pv == 0 { continue; }
-                    if pv & (pv - 1) != 0 { parity_adj |= pv; }
-                    if *parity & (*parity - 1) == 0 { bare[pv.trailing_zeros() as usize] = ticks as u64; }
+                    if !Self::is_zero_or_pow2(pv) { parity_adj |= pv; }
+                    if Self::is_zero_or_pow2(*parity) { bare[pv.trailing_zeros() as usize] = ticks as u64; }
                     let mut f = pv;
                     while f != 0 {
                         pcount[f.trailing_zeros() as usize] += 1;
@@ -315,7 +324,7 @@ macro_rules! define_reduction_logic {
                     let mut adj = [0 as $primitive; <$primitive>::BITS as usize];
                     for t in self.phase_poly.terms.iter() {
                         let tv = t.monomial() & tied;
-                        if tv & (tv - 1) == 0 { continue; }
+                        if Self::is_zero_or_pow2(tv) { continue; }
                         let mut f = tv;
                         while f != 0 {
                             adj[f.trailing_zeros() as usize] |= tv;
@@ -324,7 +333,7 @@ macro_rules! define_reduction_logic {
                     }
                     for parity in self.continuous_poly.parities.iter() {
                         let tv = *parity & tied;
-                        if tv & (tv - 1) == 0 { continue; }
+                        if Self::is_zero_or_pow2(tv) { continue; }
                         let mut f = tv;
                         while f != 0 {
                             adj[f.trailing_zeros() as usize] |= tv;
@@ -552,7 +561,7 @@ macro_rules! define_reduction_logic {
                 for (parity, &ticks) in self.continuous_poly.parities.iter().zip(self.continuous_poly.phases.iter()) {
                     if (*parity & v) == 0 { continue; }
                     parity_count += 1;
-                    if *parity & (*parity - 1) == 0 {
+                    if Self::is_zero_or_pow2(*parity) {
                         bare_remainder = Some(ticks as u64);
                     }
                     let mut others = *parity & !v;
@@ -582,7 +591,7 @@ macro_rules! define_reduction_logic {
                         linear = t.phase();
                         continue;
                     }
-                    let delta = if m & (m - 1) == 0 {
+                    let delta = if Self::is_zero_or_pow2(m) {
                         shared.iter().find(|(b, _)| *b == m).map_or(0, |(_, k)| ((4 * k) % 8) as u8)
                     } else {
                         0
@@ -710,7 +719,7 @@ macro_rules! define_reduction_logic {
                                 // Linear occurrence: the term is exactly one
                                 // path-variable bit. Anything else touching a
                                 // path variable is a nonlinear occurrence.
-                                let linear = pv == t && (pv & (pv - 1)) == 0;
+                                let linear = pv == t && Self::is_zero_or_pow2(pv);
                                 while pv != 0 {
                                     let idx = pv.trailing_zeros() as usize - lo;
                                     pv &= pv - 1;
