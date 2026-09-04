@@ -719,7 +719,8 @@ macro_rules! define_reduction_logic {
                                 // Linear occurrence: the term is exactly one
                                 // path-variable bit. Anything else touching a
                                 // path variable is a nonlinear occurrence.
-                                let linear = pv == t && Self::is_zero_or_pow2(pv);
+                                // `pv == 0` already continued; `pv - 1` is safe.
+                                let linear = pv == t && pv & (pv - 1) == 0;
                                 while pv != 0 {
                                     let idx = pv.trailing_zeros() as usize - lo;
                                     pv &= pv - 1;
